@@ -43,6 +43,7 @@ library
   import:              common-options
   hs-source-dirs:      src
   exposed-modules:     Word2nion
+  build-depends:       hasktorch >= 0.2 && < 0.3
 
 executable word2nion
   import:              common-options
