@@ -21,12 +21,24 @@ source-repository head
 
 common common-options
   build-depends:       base ^>= 4.13.0.0
+                      , hasktorch >= 0.2 && < 0.3
+                      , libtorch-ffi
+                      , first-class-families
+                      , ghc-typelits-extra
+                     , ghc-typelits-knownnat
+                     , ghc-typelits-natnormalise
+                     , mtl
   
   ghc-options:         -Wall
                        -Wcompat
                        -Widentities
                        -Wincomplete-uni-patterns
                        -Wincomplete-record-updates
+                       -fplugin GHC.TypeLits.Normalise 
+                       -fplugin GHC.TypeLits.KnownNat.Solver 
+                       -fplugin GHC.TypeLits.Extra.Solver 
+                       -fconstraint-solver-iterations=0 
+                       -rtsopts
   if impl(ghc >= 8.0)
     ghc-options:       -Wredundant-constraints
   if impl(ghc >= 8.2)
@@ -43,7 +55,7 @@ library
   import:              common-options
   hs-source-dirs:      src
   exposed-modules:     Word2nion
-  build-depends:       hasktorch >= 0.2 && < 0.3
+  build-depends:       text
 
 executable word2nion
   import:              common-options

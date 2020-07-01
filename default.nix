@@ -34,11 +34,11 @@ let
   self = {
     inherit haskellPackages;
 
-    inherit (haskellPackages.hasktorch-skeleton.identifier) version;
+    inherit (haskellPackages.word2nion.identifier) version;
 
     # Grab library components of this package.
     inherit (libs)
-      hasktorch-skeleton
+      word2nion
       ;
 
     # Grab executable components of this package.
