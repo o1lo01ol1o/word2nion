@@ -24,7 +24,7 @@
 -- | Module defining operations on quaternions.
 -- Ported from https://github.com/Orkis-Research/Pytorch-Quaternion-Neural-Networks/blob/master/core_qnn/quaternion_ops.py
 --
-module Torch.Typed.Quaternion where
+module Torch.Typed.Quaternion ((⦿), hamilton, HasQuaternion, NQuaternions, DivisionProofs) where
 import           GHC.TypeLits
 import           GHC.TypeNats           ()
 import           Prelude                hiding (sqrt, sum)
