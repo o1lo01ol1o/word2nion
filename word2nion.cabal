@@ -54,7 +54,6 @@ common common-options
 library
   import:              common-options
   hs-source-dirs:      src
-  exposed-modules:     Word2nion
   build-depends:       text
 
 executable word2nion
