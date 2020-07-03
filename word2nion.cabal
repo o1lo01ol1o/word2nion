@@ -28,7 +28,6 @@ common common-options
                      , ghc-typelits-knownnat
                      , ghc-typelits-natnormalise
                      , mtl
-  
   ghc-options:         -Wall
                        -Wcompat
                        -Widentities
@@ -43,7 +42,6 @@ common common-options
                        -fmax-worker-args=16
                        -fspec-constr-recursive=16
                       --  -fplugin=Fusion.Plugin
-                       -DGSTORABLE_SUMTYPES
                        -O2
                       --  -fllvm
                        -rtsopts
@@ -75,6 +73,7 @@ library
                       , bifunctor 
                       , generic-data 
                       , barbies 
+                      , vector
                       , IntervalMap
                       , path
                       , fusion-plugin
@@ -83,7 +82,6 @@ library
                       , bzlib
                       , random
                       , monad-control
-                      , derive-storable
                       , hvega >= 0.9.0.1
 
 executable word2nion
