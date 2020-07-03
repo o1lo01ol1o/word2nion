@@ -33,11 +33,19 @@ common common-options
                        -Wcompat
                        -Widentities
                        -Wincomplete-uni-patterns
+                       -Wunused-packages
                        -Wincomplete-record-updates
                        -fplugin GHC.TypeLits.Normalise 
                        -fplugin GHC.TypeLits.KnownNat.Solver 
                        -fplugin GHC.TypeLits.Extra.Solver 
                        -fconstraint-solver-iterations=0 
+                       -fdicts-strict
+                       -fmax-worker-args=16
+                       -fspec-constr-recursive=16
+                      --  -fplugin=Fusion.Plugin
+                       -DGSTORABLE_SUMTYPES
+                       -O2
+                      --  -fllvm
                        -rtsopts
   if impl(ghc >= 8.0)
     ghc-options:       -Wredundant-constraints
@@ -55,7 +63,28 @@ library
   import:              common-options
   hs-source-dirs:      src
   exposed-modules:     Torch.Typed.Quaternion
+                      , Torch.Streamly.Dataloader
+                      , Torch.Streamly.Tokenizer
   build-depends:       text
+                      , bytestring
+                      , streamly >=0.7.1
+                      , transformers
+                      , transformers-base
+                      , exceptions
+                      , safe-exceptions
+                      , bifunctor 
+                      , generic-data 
+                      , barbies 
+                      , IntervalMap
+                      , path
+                      , fusion-plugin
+                      , monoidal-containers
+                      , containers
+                      , bzlib
+                      , random
+                      , monad-control
+                      , derive-storable
+                      , hvega >= 0.9.0.1
 
 executable word2nion
   import:              common-options
