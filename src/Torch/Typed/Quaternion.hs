@@ -29,10 +29,14 @@ module Torch.Typed.Quaternion
   ( (⦿),
     hamilton,
     initialize,
-    -- normalize,
+    normalize,
+    innerProduct,
+    approxDistances,
     Quaternions (..),
     catQuaternions,
     HasQuaternions,
+    HasQuaternionComponents,
+    CanNormalize,
     HasHamiltonProduct,
     NQuaternions,
     DivisionProofs,
@@ -47,6 +51,7 @@ import Fcf.Data.List
 import Fcf.Utils
 import GHC.Generics (Generic)
 import GHC.TypeLits
+import Torch.Streamly.Dataloader
 import GHC.TypeNats ()
 import Torch.Initializers
   ( FanMode (..),
@@ -135,58 +140,44 @@ i = narrow @dim @(featureSize `Div` 4) @(featureSize `Div` 4)
 j = narrow @dim @(featureSize `Div` 2) @(featureSize `Div` 4)
 k = narrow @dim @(featureSize - (featureSize `Div` 4)) @(featureSize `Div` 4)
 
--- data Modulous = ModulousScalar | ModulousVector
---   deriving stock (Show, Eq, Ord, Enum, Bounded, Generic)
+modulous ::
+  forall featureSize dim shape device dtype.
+  ( HasQuaternionComponents shape dim featureSize device dtype,
+    StandardFloatingPointDTypeValidation
+      device
+      dtype
+  ) =>
+  Tensor device dtype shape ->
+  Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape))
+modulous t' = root
+  where
+    root = sqrt $ (r' * r' + i' * i' + j' * j' + k' * k')
+    r' = r t'
+    i' = i t'
+    j' = j t'
+    k' = k t'
 
--- data SingModulous m where
---   SModulousScalar :: SingModulous 'ModulousScalar
---   SModulousVector :: SingModulous 'ModulousVector
+type CanNormalize shape device dtype =
+  ( KnownShape shape,
+    shape ~ Broadcast (Eval (ApplyToLast QuaternionComponent shape)) shape,
+    StandardFloatingPointDTypeValidation
+      device
+      dtype
+  )
 
--- type family Modulate (m :: Modulous) (f :: [Nat]) :: [Nat] where
---   Modulate 'ModulousScalar (b ': f ': '[]) = '[b]
---   Modulate 'ModulousVector '[b, f] = '[b, NQuaternions f]
-
--- type Modulateable dtype device shape =
---   ( SumDType dtype ~ dtype,
-
---     DivisionProofs (Eval(FromJust =<< (Last shape))) 4,
---     SumDTypeIsValid device dtype,
---     KnownDevice device,
---     StandardFloatingPointDTypeValidation
---       device
---       dtype,
---     All KnownNat shape
---   )
-
--- modulous ::
---   (Modulateable dtype device shape) =>
---   SingModulous s ->
---   Tensor device dtype shape ->
---   Tensor device dtype (Modulate s shape)
--- modulous sm t' = case sm of
---   SModulousScalar -> sumDim @1 root
---   SModulousVector -> root
---   where
---     root = sqrt $ (r' * r' + i' * i' + j' * j' + k' * k')
---     r' = r t'
---     i' = i t'
---     j' = j t'
---     k' = k t'
-
--- -- TODO: orig uses "repeate" instead of expand and has an extra expand_as step . . .
--- --
--- normalize ::
---   forall dtype device shape.
---   (Modulateable dtype device shape) =>
---   Tensor device dtype shape ->
---   Tensor device dtype shape
--- normalize t' = t' / (addScalar eps modu)
---   where
---     eps = 0.0001 :: Float
---     modu =
---       expand @shape True
---         . reshape @'[batchSize, 1]
---         $ modulous SModulousScalar t'
+-- TODO: orig uses "repeate" instead of expand and has an extra expand_as step . . .
+--
+normalize ::
+  forall featureSize dim shape device dtype.
+  ( HasQuaternionComponents shape dim featureSize device dtype,
+    CanNormalize shape device dtype
+  ) =>
+  Tensor device dtype shape ->
+  Tensor device dtype shape
+normalize t' = t' / (addScalar eps modu)
+  where
+    eps = 0.0001 :: Float
+    modu = expand @shape True $ modulous t'
 
 data HasHamiltonProduct' device dtype :: [Nat] -> Exp Constraint
 
@@ -256,6 +247,45 @@ infix 5 ⦿
   Tensor device dtype shape ->
   Tensor device dtype shape
 a ⦿ b = hamilton a b
+
+-- | inner product of each quaternion
+-- see: https://math.stackexchange.com/questions/90081/quaternion-distance
+innerProduct ::
+  forall shape outShape featureSize dim dtype device lastDim.
+  ( lastDim ~ (Eval (Length shape) - 1),
+    (featureSize ~ LastDimVal shape),
+    All KnownNat '[lastDim, featureSize, dim],
+    HasQuaternionComponents shape dim featureSize device dtype,
+    dim ~ Eval (QuaternionDimToNarrow (Eval (Length shape))),
+    Eval (ApplyToLast QuaternionComponent shape) ~ outShape
+  ) =>
+  Tensor device dtype shape ->
+  Tensor device dtype shape ->
+  Tensor device dtype outShape
+innerProduct q1 q2 = (q1_r * (r q2)) + (q1_i * (i q2)) + (q1_j * (j q2)) + (q1_k * (k q2))
+  where
+    q1_r = r q1
+    q1_i = i q1
+    q1_j = j q1
+    q1_k = k q1
+
+-- | Estimates distances between quaternions without needing arc cos
+-- see https://math.stackexchange.com/questions/90081/quaternion-distance
+-- N.B. the output will be a vector of pair-wise distances between each quaternion
+approxDistances ::
+  forall shape featureSize dim dtype device.
+  ( HasQuaternionComponents shape dim featureSize device dtype,
+    CanNormalize shape device dtype
+  ) =>
+  Tensor device dtype shape ->
+  Tensor device dtype shape ->
+  Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape))
+approxDistances q1 q2 = addScalar (1.0 :: Double) d
+  where
+    q1' = normalize q1
+    q2' = normalize q2
+    -- Because we're dealing with groups of quaternions, this will be a vector of distances
+    d = ((-1.0) * (pow (2 :: Int) (innerProduct q1' q2')))
 
 data InitializationScheme = InitializationSchemeGlorot | InitializationSchemeHe
   deriving stock (Show, Eq, Ord, Enum, Bounded, Generic)

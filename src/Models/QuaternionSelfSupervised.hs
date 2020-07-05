@@ -49,6 +49,7 @@ import qualified Streamly.Prelude as S
 import System.Environment
 import System.IO.Unsafe
 import System.Random
+import Torch.Streamly.Dataloader
 import qualified Torch.Autograd as A
 import qualified Torch.DType as D
 import qualified Torch.Device as D
@@ -77,15 +78,15 @@ import Prelude hiding (abs, tanh)
 data Word2Quat vocabSize featureSize dtype device where
   Word2Quat ::
     forall vocabSize featureSize dtype device.
-    { embed0 :: Embedding 'Nothing vocabSize featureSize 'Learned dtype device,
-      fc0 :: Linear featureSize 1 dtype device,
-      w2qDropout :: Dropout
+    { embed0 :: Embedding 'Nothing vocabSize featureSize 'Learned dtype device
+    --   fc0 :: Linear featureSize 1 dtype device,
+    --   w2qDropout :: Dropout
     } ->
     Word2Quat vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
 data Word2QuatSpec vocabSize featureSize dtype device where
-  Word2QuatSpec :: {w2qDropoutProbSpec :: Double} -> Word2QuatSpec vocabSize featureSize dtype device
+  Word2QuatSpec :: Word2QuatSpec vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
 instance
@@ -105,30 +106,42 @@ instance
     (Word2QuatSpec vocabSize featureSize dtype device)
     (Word2Quat vocabSize featureSize dtype device)
   where
-  sample Word2QuatSpec {..} = do
+  sample Word2QuatSpec = do
     init' <- catQuaternions @'[vocabSize, (Div featureSize 4)] <$> initialize @vocabSize @(Div featureSize 4)
     Word2Quat
       <$> A.sample (LearnedEmbeddingWithCustomInitSpec @'Nothing @vocabSize @featureSize @dtype @device init')
-      <*> A.sample (LinearSpec)
-      <*> A.sample (DropoutSpec w2qDropoutProbSpec)
+    --   <*> A.sample (LinearSpec)
+    --   <*> A.sample (DropoutSpec w2qDropoutProbSpec)
 
+
+-- Interesting idea: in word2vec, we ask the word reps to be similar subject to their co-occurance
+-- Instead of asking them to be similar, what if we ask them to maximize their effective complexity?
+-- We can take the output of `approxDistances` to be a probability distibution for shannon entropy
+-- and then try to estimate the AIC of the quaternion features themselves.  This implicitly askes each
+-- word in the sequence to develop the sequence as efficiently as possible.
+--
 word2Quat ::
-  forall batchSize vocabSize featureSize dtype device.
-  ( StandardFloatingPointDTypeValidation
-      device
-      dtype, 
-      HasHamiltonProduct device dtype '[batchSize, featureSize]
+  forall batchSize vocabSize featureSize dim dtype device.
+  ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
+    'True ~ (1 <=? (Div featureSize 4)),
+    'True ~ (1 <=? batchSize),
+    CanNormalize '[batchSize, featureSize] device dtype,
+    MeanDTypeValidation device dtype
   ) =>
   Word2Quat vocabSize featureSize dtype device ->
   Bool ->
   [Tensor device 'D.Int64 '[batchSize]] ->
-  IO (Tensor device dtype '[batchSize, 1])
+  IO (Tensor device dtype '[batchSize])
 word2Quat Word2Quat {..} _stochastic input = do
   let e = reshape @'[batchSize, featureSize] . forward embed0 <$> input
-  let r' = hamiltonReduce e
-  pure . tanh . forward fc0 $ r'
+  let r' = hamiltonReduce Nothing e
+  pure . meanDim @1 . mulScalar (1.0 / (fromIntegral $ length r') :: Double) . sum $ (\ (q1, q2) -> pow (2 :: Int) $ approxDistances q1 q2) <$> byTwos r' 
   where
-    hamiltonReduce :: [Tensor device dtype '[batchSize, featureSize]] -> Tensor device dtype '[batchSize, featureSize]
-    hamiltonReduce [] = error "hamiltonReduce: impossible"
-    hamiltonReduce (x : []) = x
-    hamiltonReduce (x : y : xs) = hamiltonReduce $ (hamilton x y) : xs
+    hamiltonReduce :: Maybe (Tensor device dtype '[batchSize, featureSize]) -> [Tensor device dtype '[batchSize, featureSize]] -> [Tensor device dtype '[batchSize, featureSize]]
+    hamiltonReduce Nothing (x : y : xs) = hamiltonReduce (Just $ x ⦿ y) $ y : xs
+    hamiltonReduce (Just l) (x : []) = [l ⦿ x]
+    hamiltonReduce (Just l) (x : y : xs) = 
+        let acc = (l ⦿ x) 
+        in acc : hamiltonReduce (Just acc) (y : xs)
+    hamiltonReduce Nothing _ = error "hamiltonReduce: sequences must have at least two members"
+    hamiltonReduce _ _ = error "hamiltonReduce: impossible"

@@ -23,6 +23,7 @@ module Torch.Streamly.Dataloader
   ( TokenStreamDataset (..),
     dataset,
     trainStream,
+    byTwos
   )
 where
 
