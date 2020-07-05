@@ -19,6 +19,8 @@
 {-# LANGUAGE TypeFamilies               #-}
 {-# LANGUAGE UndecidableInstances       #-}
 
+-- | Module defines types and functions for dataset streams
+-- to be fead to models during training.
 module Torch.Streamly.Dataloader
   ( TokenStreamDataset (..),
     dataset,
@@ -138,6 +140,10 @@ tokenFrequencies :: (MonadAsync m, Ord a) => AheadT m a -> m (MonoidalMap a (Sum
 tokenFrequencies = S.fold (groupBy Just (const $ Sum 1)) . serially . aheadly
 
 {-# INLINE byTwos #-}
+-- | Two by two . . .
+--
+-- >>> byTwos [1..10]
+-- [(1,2),(2,3),(3,4),(4,5),(5,6),(6,7),(7,8),(8,9),(9,10)]
 byTwos :: [b] -> [(b, b)]
 byTwos xs = zip xs $ tail xs
 

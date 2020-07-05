@@ -21,60 +21,36 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
 
-
+-- | Module defining typeclasses for creating models, training
+-- and monitoring routines using (concurrent) streamly streams.
+-- Instances for these typeclasses should be implemented along with your model,
+-- not here.
 module Trainer where
 
 import Control.Monad.Catch
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Control
+import Data.Functor.Const
 import Data.Functor.Identity
 import Data.Functor.Product
 import Data.Kind (Type)
 import qualified Data.Monoid.Statistics as StatM
-  ( Variance(..),
-    MeanKBN (..),
-    StatMonoid,
+  ( StatMonoid,
     addValue,
-    reduceSampleVec,
     singletonMonoid,
   )
 import Data.Proxy
-import qualified Data.Traversable as P
-import qualified Data.Vector as V
 import GHC.Generics (Generic)
 import qualified GHC.List as P
-import GHC.TypeLits
-import Generic.Data (Generically (..))
 import Graphics.Vega.VegaLite hiding (Mean, Variance)
-import Statistics.Sample.Histogram (histogram)
 import Streamly
 import qualified Streamly.Data.Fold as FL
 import Streamly.Internal.Data.Fold (mkFold)
 import Streamly.Prelude as S hiding (length, replicate)
-import qualified Torch.Autograd as A
 import qualified Torch.DType as D
-import qualified Torch.Device as D
-import qualified Torch.Functional as D
-import Torch.HList (Apply, HFoldrM, HList, HMap', HMapM', HUnfoldM, HUnfoldMRes)
-import qualified Torch.Internal.Cast as ATen
 import qualified Torch.Internal.Class as ATen
-import qualified Torch.Internal.Managed.Type.Context as ATen
-import qualified Torch.Internal.Managed.Type.Tensor as ATen
-import qualified Torch.Internal.Type as ATen
-import qualified Torch.NN as A
-import Data.Functor.Const
 import qualified Torch.Tensor as D
-import qualified Torch.TensorFactories as D
 import Torch.Typed hiding (dropout, linear)
-import Torch.Typed.Autograd (HasGrad)
-import Torch.Typed.Aux
-import Torch.Typed.Factories
-import Torch.Typed.Functional
-import Torch.Typed.NN hiding (forward)
-import Torch.Typed.NN.Recurrent.LSTM
-import Torch.Typed.Optim
-import Torch.Typed.Parameter hiding (toDType)
-import Torch.Typed.Tensor
 
 type Two f a = Product f f a
 
@@ -152,7 +128,8 @@ class
     HasTrainState model optim,
     HasMetricSpace model
   ) =>
-  Trainable model optim where
+  Trainable model optim
+  where
   trainStepM ::
     ( MonadIO m
     ) =>

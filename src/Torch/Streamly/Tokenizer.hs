@@ -1,5 +1,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+-- | Helpers for tokenizing text.
+-- Slightly adapted from: https://hackage.haskell.org/package/glider-nlp-0.4/docs/src/Glider-NLP-Tokenizer.html#tokenize
 module Torch.Streamly.Tokenizer
   ( Token (..),
     getTokens,
@@ -12,7 +14,6 @@ import qualified Data.List as List
 import Data.Text
 import Prelude hiding (dropWhile, head, null, tail, takeWhile)
 
--- Slightly adapted from: https://hackage.haskell.org/package/glider-nlp-0.4/docs/src/Glider-NLP-Tokenizer.html#tokenize
 
 -- | Token type
 data Token
@@ -26,7 +27,7 @@ data Token
 
 -- | Split text into tokens
 --
--- > tokenize "one two." == [Word "one", Whitespace, Word "two", "Separator "."]
+-- > tokenize "one two." == [Token "one", Whitespace, Token "two", "Separator "."]
 tokenize :: Text -> [Token]
 tokenize xs = case allParser xs of
   [(v, out)] -> v : tokenize out

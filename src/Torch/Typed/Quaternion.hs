@@ -38,7 +38,6 @@ module Torch.Typed.Quaternion
     HasQuaternionComponents,
     CanNormalize,
     HasHamiltonProduct,
-    NQuaternions,
     DivisionProofs,
   )
 where
@@ -63,11 +62,16 @@ import Torch.Typed
 import qualified Prelude as P (sqrt)
 import Prelude hiding (cos, pi, sin, sqrt, sum)
 
-type family NQuaternions (features :: Nat) where
-  NQuaternions n = Div n 4
 
+-- | The general idea here is that some dimension in a tensor will contain
+-- blocks of componenets (coefficients) of quaterions.  So, if `featureSize` 
+-- is the size of that dimension, we require that it be divisible by 4
+-- in order to "interpret" it has representing quaternions.
+--
 type HasQuaternions f = ((f `Mod` 4) ~ 0)
 
+-- | Blehh. This should really be in GHC.TypeLits.KnownNat.Solver but it's not. 
+--
 type DivisionProofs n d =
   ( n `Div` d <= n,
     Div n d + Div n d <= n,
@@ -77,6 +81,9 @@ type DivisionProofs n d =
       ~ ((n - Div n d) + Div n d)
   )
 
+-- | This monstrosity is static proof that we can pull out and concatenate quaternion compnents
+-- from a given tensor.
+--
 type HasQuaternionComponents shape dim featureSize device dtype =
   ( Narrow shape dim 0 (Div featureSize 4) ~ Eval (ApplyToLast QuaternionComponent shape),
     Narrow shape dim (featureSize `Div` 4) (Div featureSize 4) ~ Eval (ApplyToLast QuaternionComponent shape),
@@ -98,12 +105,17 @@ type HasQuaternionComponents shape dim featureSize device dtype =
     dim ~ Eval (QuaternionDimToNarrow (Eval (Length shape)))
   )
 
+-- | These are bits and pieces from `first-class-families`
+-- to make type-level programming more expressive.  We basically 
+-- just need some basic functions to look through lists and replace values.
+--
 data ApplyToLast :: (a -> Exp b) -> [a] -> Exp [a]
 
 data QuaternionComponent :: Nat -> Exp Nat
 
 data Quaternion :: Nat -> Exp Nat
 
+-- see `first-class-families` to see how this works.
 type instance Eval (QuaternionComponent n) = Div n 4
 
 type instance Eval (Quaternion n) = n * 4
@@ -125,7 +137,7 @@ type QuaternionDimToNarrow =
       3 --> 2
     ]
 
--- | Accessors
+-- | Accessors:  gets the real and imaginary components from a tensor.
 r,
   i,
   j,
@@ -165,7 +177,9 @@ type CanNormalize shape device dtype =
       dtype
   )
 
--- TODO: orig uses "repeate" instead of expand and has an extra expand_as step . . .
+-- | Normalize to a unit quaternion.
+--
+-- TODO: orig uses "repeat" instead of expand and has an extra expand_as step . . .
 --
 normalize ::
   forall featureSize dim shape device dtype.
@@ -248,7 +262,7 @@ infix 5 ⦿
   Tensor device dtype shape
 a ⦿ b = hamilton a b
 
--- | inner product of each quaternion
+-- | Inner product of each quaternion
 -- see: https://math.stackexchange.com/questions/90081/quaternion-distance
 innerProduct ::
   forall shape outShape featureSize dim dtype device lastDim.
@@ -286,10 +300,10 @@ approxDistances q1 q2 = addScalar (1.0 :: Double) d
     q2' = normalize q2
     -- Because we're dealing with groups of quaternions, this will be a vector of distances
     d = ((-1.0) * (pow (2 :: Int) (innerProduct q1' q2')))
-
-data InitializationScheme = InitializationSchemeGlorot | InitializationSchemeHe
-  deriving stock (Show, Eq, Ord, Enum, Bounded, Generic)
-
+    
+-- | Little bit of typed niceness before making them disapper
+-- into the morass of "tensor"s.
+--
 data Quaternions shape device dtype = Quaternions
   { quaternions_r :: Tensor device dtype shape,
     quaternions_i :: Tensor device dtype shape,
@@ -297,6 +311,8 @@ data Quaternions shape device dtype = Quaternions
     quaternions_k :: Tensor device dtype shape
   }
 
+-- | Make them disappear into the morass
+--
 catQuaternions ::
   forall compShape lastDim outShape dtype device.
   ( KnownNat lastDim,

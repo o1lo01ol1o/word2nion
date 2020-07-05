@@ -75,6 +75,8 @@ import Torch.Typed.Tensor
 import Trainer
 import Prelude hiding (abs, tanh)
 
+-- | (Vanilla) quaternion model is just an embedding matrix of size (vocabSize, featureSize)
+--
 data Word2Quat vocabSize featureSize dtype device where
   Word2Quat ::
     forall vocabSize featureSize dtype device.
@@ -85,10 +87,13 @@ data Word2Quat vocabSize featureSize dtype device where
     Word2Quat vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
+-- | The initialization spec is boring in this case
 data Word2QuatSpec vocabSize featureSize dtype device where
   Word2QuatSpec :: Word2QuatSpec vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
+-- | ... we just initialize the matrix with random quaternions.
+--
 instance
   ( KnownDType dtype,
     KnownDevice device,
@@ -113,12 +118,20 @@ instance
     --   <*> A.sample (LinearSpec)
     --   <*> A.sample (DropoutSpec w2qDropoutProbSpec)
 
-
+-- | The forward propagation function.  It takes a model, a boolean designating dropout use (unused), and input data
+-- in the form of a list of tokens in a sequence (of `batchSize` individual sequences). output is a tensor of mean squared
+-- errors (where error is cacluated as the average squared distance between all intermediary states and next tokens for all batches) over each sequence.
+--
 -- Interesting idea: in word2vec, we ask the word reps to be similar subject to their co-occurance
 -- Instead of asking them to be similar, what if we ask them to maximize their effective complexity?
--- We can take the output of `approxDistances` to be a probability distibution for shannon entropy
--- and then try to estimate the AIC of the quaternion features themselves.  This implicitly askes each
--- word in the sequence to develop the sequence as efficiently as possible.
+-- We can take the output of `approxDistances` to be a probability distibution for shannon entropy:
+-- Ie, a vector populated by probabilities.  In this case, the entropy is 0 when q1 and q2 are the same.
+-- intuitively, this makes sense: if the total of all previous words in a text perfectly imply the next word,
+-- there's zero uncertainty between them.  Conversly, if q2 comes out of nowhere, thre's higher uncertainty.
+-- The AIC (Komogorov Complexity) can be estimated by learning an autoencoder that tries to compress the quaternions
+-- themselves.  This will output a reconstruction error that is a metric of relative uncompressability and
+-- approximates KC. Shhould the AIC be estimated on the quaternions of q1 and q2?  I suppose it needs to since
+-- the shannon entropy depends on both.
 --
 word2Quat ::
   forall batchSize vocabSize featureSize dim dtype device.
@@ -133,7 +146,7 @@ word2Quat ::
   [Tensor device 'D.Int64 '[batchSize]] ->
   IO (Tensor device dtype '[batchSize])
 word2Quat Word2Quat {..} _stochastic input = do
-  let e = reshape @'[batchSize, featureSize] . forward embed0 <$> input
+  let e = reshape @'[batchSize,featureSize] . forward embed0 <$> input
   let r' = hamiltonReduce Nothing e
   pure . meanDim @1 . mulScalar (1.0 / (fromIntegral $ length r') :: Double) . sum $ (\ (q1, q2) -> pow (2 :: Int) $ approxDistances q1 q2) <$> byTwos r' 
   where
