@@ -68,9 +68,6 @@ import Torch.Typed.Functional hiding
     linear,
   )
 import Torch.Typed.NN
-import Torch.Typed.NN.Dropout
-import Torch.Typed.NN.Linear
-import Torch.Typed.NN.Sparse
 import Torch.Typed.Parameter
 import Torch.Typed.Quaternion
 import Torch.Typed.Tensor
@@ -119,7 +116,8 @@ word2Quat ::
   forall batchSize vocabSize featureSize dtype device.
   ( StandardFloatingPointDTypeValidation
       device
-      dtype
+      dtype, 
+      HasHamiltonProduct device dtype '[batchSize, featureSize]
   ) =>
   Word2Quat vocabSize featureSize dtype device ->
   Bool ->

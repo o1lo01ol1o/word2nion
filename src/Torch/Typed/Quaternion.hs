@@ -33,12 +33,16 @@ module Torch.Typed.Quaternion
     Quaternions (..),
     catQuaternions,
     HasQuaternions,
+    HasHamiltonProduct,
     NQuaternions,
     DivisionProofs,
   )
 where
 
+import Data.Kind (Constraint)
+import Fcf.Combinators
 import Fcf.Core
+import Fcf.Data.Common
 import Fcf.Data.List
 import Fcf.Utils
 import GHC.Generics (Generic)
@@ -75,14 +79,14 @@ type HasQuaternionComponents shape dim featureSize device dtype =
     Narrow shape dim (featureSize - (featureSize `Div` 4)) (Div featureSize 4) ~ Eval (ApplyToLast QuaternionComponent shape),
     '(shape, dtype, device)
       ~ Cat
-          (Eval (Length shape))
+          (Eval (Length shape) - 1)
           '[ Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape)),
              Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape)),
              Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape)),
              Tensor device dtype (Eval (ApplyToLast QuaternionComponent shape))
            ],
-    ('Just featureSize ~ Eval (Last shape)),
-    All KnownNat '[Eval (Length shape), featureSize, dim],
+    (featureSize ~ LastDimVal shape),
+    All KnownNat '[Eval (Length shape) - 1, featureSize, dim],
     All KnownNat shape,
     KnownDevice device,
     DivisionProofs featureSize 4,
@@ -184,9 +188,21 @@ k = narrow @dim @(featureSize - (featureSize `Div` 4)) @(featureSize `Div` 4)
 --         . reshape @'[batchSize, 1]
 --         $ modulous SModulousScalar t'
 
+data HasHamiltonProduct' device dtype :: [Nat] -> Exp Constraint
+
+type LastDimVal shape = Eval (FromMaybe 1 =<< (Last shape))
+
+type instance
+  Eval (HasHamiltonProduct' device dtype shape) =
+    ( All KnownNat '[(Eval (Length shape) - 1), LastDimVal shape, Eval (QuaternionDimToNarrow (Eval (Length shape)))],
+      HasQuaternionComponents shape (Eval (QuaternionDimToNarrow (Eval (Length shape)))) (LastDimVal shape) device dtype
+    )
+
+type HasHamiltonProduct device dtype shape = Eval (HasHamiltonProduct' device dtype shape)
+
 -- | Applies the Hamilton product of q0 and q1:
 --    Shape:
---        - q0, q1 should be of some shape where the final dimension 
+--        - q0, q1 should be of some shape where the final dimension
 --        - are quaternions
 --        (rr' - xx' - yy' - zz')  +
 --        (rx' + xr' + yz' - zy')i +
@@ -194,8 +210,8 @@ k = narrow @dim @(featureSize - (featureSize `Div` 4)) @(featureSize `Div` 4)
 --        (rz' + xy' - yx' + zr')k +
 hamilton ::
   forall shape featureSize dim dtype device lastDim.
-  ( lastDim ~ Eval (Length shape),
-    ('Just featureSize ~ Eval (Last shape)),
+  ( lastDim ~ (Eval (Length shape) - 1),
+    (featureSize ~ LastDimVal shape),
     All KnownNat '[lastDim, featureSize, dim],
     HasQuaternionComponents shape dim featureSize device dtype,
     dim ~ Eval (QuaternionDimToNarrow (Eval (Length shape)))
@@ -230,8 +246,8 @@ infix 5 ⦿
 
 (⦿) ::
   forall shape featureSize dim dtype device lastDim.
-  ( lastDim ~ Eval (Length shape),
-    ('Just featureSize ~ Eval (Last shape)),
+  ( lastDim ~ (Eval (Length shape) - 1),
+    (featureSize ~ LastDimVal shape),
     All KnownNat '[lastDim, featureSize, dim],
     HasQuaternionComponents shape dim featureSize device dtype,
     dim ~ Eval (QuaternionDimToNarrow (Eval (Length shape)))
@@ -252,19 +268,19 @@ data Quaternions shape device dtype = Quaternions
   }
 
 catQuaternions ::
-  forall shape lastDim outShape dtype device.
+  forall compShape lastDim outShape dtype device.
   ( KnownNat lastDim,
-    lastDim ~ Eval (Length shape),
+    (lastDim ~ (Eval (Length compShape) - 1)),
     '(outShape, dtype, device)
       ~ Cat
-          (Eval (Length shape))
-          '[ Tensor device dtype shape,
-             Tensor device dtype shape,
-             Tensor device dtype shape,
-             Tensor device dtype shape
+          (Eval (Length compShape) - 1)
+          '[ Tensor device dtype compShape,
+             Tensor device dtype compShape,
+             Tensor device dtype compShape,
+             Tensor device dtype compShape
            ]
   ) =>
-  Quaternions shape device dtype ->
+  Quaternions compShape device dtype ->
   Tensor device dtype outShape
 catQuaternions (Quaternions q_r q_i q_j q_k) = cat @lastDim (q_r :. q_i :. q_j :. q_k :. HNil)
 
