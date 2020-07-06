@@ -213,6 +213,13 @@ type HasHamiltonProduct device dtype shape = Eval (HasHamiltonProduct' device dt
 --        (rx' + xr' + yz' - zy')i +
 --        (ry' - xz' + yr' + zx')j +
 --        (rz' + xy' - yx' + zr')k +
+--
+-- The operation is non-commutive.  The reader can verify the 
+-- following check is not due to floatingpoint errors if she wants.
+-- >>> a <- initialize :: IO (Quaternions '[1,8] '(CPU,0) 'D.Float)
+-- >>> b <- initialize :: IO (Quaternions '[1,8] '(CPU,0) 'D.Float)
+-- >>> (toList .Just $ catQuaternions a ⦿ catQuaternions b) == (toList . Just $ catQuaternions b ⦿ catQuaternions a)
+-- False
 hamilton ::
   forall shape featureSize dim dtype device lastDim.
   ( lastDim ~ (Eval (Length shape) - 1),
