@@ -343,9 +343,9 @@ initialize ::
   ) =>
   IO (Quaternions '[nIn, nOut] device dtype)
 initialize = do
-  (modulus :: Tensor device dtype '[nIn, nOut]) <- UnsafeMkTensor <$> kaimingUniform FanIn (LeakyRelu $ P.sqrt (0.0 :: Float)) [fan_out, fan_in]
+  (modulus :: Tensor device dtype '[nIn, nOut]) <- UnsafeMkTensor <$> kaimingUniform FanIn (LeakyRelu $ P.sqrt (0.0 :: Float)) [fan_in, fan_out]
   (v :: Tensor device dtype '[nIn * nOut, 3]) <- UnsafeMkTensor <$> randUnif [fan_out * fan_in, 3]
-  (phase :: Tensor device dtype '[nIn, nOut]) <- UnsafeMkTensor . (* pi) <$> randUnif [fan_out, fan_in]
+  (phase :: Tensor device dtype '[nIn, nOut]) <- UnsafeMkTensor . (* pi) <$> randUnif [fan_in, fan_out]
   let vnorm = sqrt . sumDim @1 $ (addScalar eps (v ^ (2 :: Int)))
       v' = v / (expand @'[nIn * nOut, 3] True $ reshape @'[nIn * nOut, 1] vnorm)
       v_i = reshape @'[nIn, nOut] $ narrow @1 @0 @1 v'
