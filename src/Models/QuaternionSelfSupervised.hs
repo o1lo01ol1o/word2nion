@@ -20,6 +20,10 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
 
+-- | Defines a model similar to the one defined in the word2vec papers
+-- except it is represented by quaternions and it can support aribitrary lenghts
+-- of sequences.
+--
 module Models.QuaternionSelfSupervised where
 
 import Barbies
