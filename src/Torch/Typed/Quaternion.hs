@@ -216,6 +216,7 @@ type HasHamiltonProduct device dtype shape = Eval (HasHamiltonProduct' device dt
 --
 -- The operation is non-commutive.  The reader can verify the 
 -- following check is not due to floatingpoint errors if she wants.
+-- >>> import GHC.Exts (toList)
 -- >>> a <- initialize :: IO (Quaternions '[1,8] '(CPU,0) 'D.Float)
 -- >>> b <- initialize :: IO (Quaternions '[1,8] '(CPU,0) 'D.Float)
 -- >>> (toList .Just $ catQuaternions a ⦿ catQuaternions b) == (toList . Just $ catQuaternions b ⦿ catQuaternions a)
