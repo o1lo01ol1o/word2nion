@@ -143,6 +143,16 @@ instance
 -- (the last hamiton product) and the AIC (via a `ReconstructionError`) of "articulation model".  Each term is averaged
 -- over the sequence of tokens.
 --
+-- TODO: There are a few ways to figure out how to develop this.  Probably these should be pursude after
+-- a simpler analyssi  of the quaternion-based approach vs word2vec.
+-- Two thoughts:  currently, AIC and SE are caclulated on the same data (modulo a linear transformation)
+-- In Gell-Mann, EC is the AIC of "model" that issues a probability distribution over the data.  As such, it may
+-- be worth it to add an MLP that takes the current state and predicts the next token (either via) emitting the raw token
+-- and taking the distance or by using a hierarchical softmax over the vocab.  This is closer to traditional language modeling
+-- but motivates using the AIC on a model instead of conflating the "model" with the currnet state of the reading as well as the 
+-- asking the reading to anticipate the next token.
+-- A more complex option would be to try to maximize the integrated (effective) complexity on the vocabulary itself.
+--
 word2QuatEffComplex ::
   forall batchSize vocabSize featureSize dim dtype device.
   ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
