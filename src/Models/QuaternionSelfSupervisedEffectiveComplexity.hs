@@ -89,6 +89,7 @@ import Prelude hiding (abs, tanh)
 -- as to the degree to which the "articulation model" can be both a model and the probability distrobution
 -- over the data ie, the next token.  In Gell-Mann, they are separate, but the distribution forms a lower bound on the
 -- complexity of a modle since any model could just be a constant distibution.
+--
 data Word2QuatEffComplex vocabSize featureSize dtype device where
   Word2QuatEffComplex ::
     forall vocabSize featureSize dtype device.
@@ -108,11 +109,13 @@ data Word2QuatEffComplex vocabSize featureSize dtype device where
 -- of the two loss functions we want to use (the AIC via reconstruction error
 -- and the shannon entropy / cosine distance between "articulation model" and subsequent token.)
 -- It also take as dropout parameter to hand off to the autoencoder's initialization.
+--
 data Word2QuatEffComplexSpec vocabSize featureSize dtype device where
   Word2QuatEffComplexSpec :: {w2qecAlpha :: Double, w2qecDropout :: Double} -> Word2QuatEffComplexSpec vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
 -- | Initialize with quaternions and a random Autoeencoder
+--
 instance
   ( KnownDType dtype,
     KnownDevice device,
@@ -136,20 +139,10 @@ instance
       <$> A.sample (LearnedEmbeddingWithCustomInitSpec @'Nothing @vocabSize @featureSize @dtype @device init')
       <*> A.sample (AutoEncoderSpec w2qecDropout)
 
--- | The forward propagation function.  It takes a model, a boolean designating dropout use (unused), and input data
--- in the form of a list of tokens in a sequence (of `batchSize` individual sequences). output is a tensor of mean squared
--- errors (where error is cacluated as the average squared distance between all intermediary states and next tokens for all batches) over each sequence.
+-- | word2Quat but caclulates the loss based on the entropy of the next word and the current "articulation model"
+-- (the last hamiton product) and the AIC (via a `ReconstructionError`) of "articulation model".  Each term is averaged
+-- over the sequence of tokens.
 --
--- Interesting idea: in word2vec, we ask the word reps to be similar subject to their co-occurance
--- Instead of asking them to be similar, what if we ask them to maximize their effective complexity?
--- We can take the output of `approxDistances` to be a probability distibution for shannon entropy:
--- Ie, a vector populated by probabilities.  In this case, the entropy is 0 when q1 and q2 are the same.
--- intuitively, this makes sense: if the total of all previous words in a text perfectly imply the next word,
--- there's zero uncertainty between them.  Conversly, if q2 comes out of nowhere, thre's higher uncertainty.
--- The AIC (Komogorov Complexity) can be estimated by learning an autoencoder that tries to compress the quaternions
--- themselves.  This will output a reconstruction error that is a metric of relative uncompressability and
--- approximates KC. Should the AIC be estimated on the quaternions of q1 and q2?  I suppose it needs to since
--- the shannon entropy depends on both.
 word2QuatEffComplex ::
   forall batchSize vocabSize featureSize dim dtype device.
   ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
