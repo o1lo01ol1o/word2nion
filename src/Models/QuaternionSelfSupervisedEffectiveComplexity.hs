@@ -20,11 +20,10 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
 
--- | Defines a model similar to the one defined in the word2vec papers
--- except it is represented by quaternions and it can support aribitrary lenghts
--- of sequences.
---
-module Models.QuaternionSelfSupervised where
+-- | Defines a model that seeks to maximize the expected complexity of a sequence
+-- of tokens sourced from real-world copora and minimize the expected complexity
+-- of tokens from artificial (noise) corpora.
+module Models.QuaternionSelfSupervisedEffectiveComplexity where
 
 import Barbies
 import Control.Exception.Safe (SomeException (..), try)
@@ -41,19 +40,21 @@ import qualified Data.Monoid.Statistics as StatM
 import Data.Proxy
 import Data.Sequence (Seq)
 import qualified Data.Sequence as Seq
+import Fcf.Core
+import Fcf.Data.List
 import Foreign.ForeignPtr
 import GHC.Generics
 import GHC.TypeLits
 import GHC.TypeLits.Extra
 import Generic.Data (Generically (..))
 import Graphics.Vega.VegaLite hiding (Identity)
+import Models.AutoEncoder
 import Streamly
 import Streamly
 import qualified Streamly.Prelude as S
 import System.Environment
 import System.IO.Unsafe
 import System.Random
-import Torch.Streamly.Dataloader
 import qualified Torch.Autograd as A
 import qualified Torch.DType as D
 import qualified Torch.Device as D
@@ -64,9 +65,11 @@ import qualified Torch.Internal.Managed.Type.Context as ATen
 import qualified Torch.Internal.Managed.Type.Tensor as ATen
 import qualified Torch.Internal.Type as ATen
 import qualified Torch.NN as A
+import Torch.Streamly.Dataloader
 import qualified Torch.Tensor as D
 import qualified Torch.TensorFactories as D
 import Torch.Typed.Aux
+import Torch.Typed.Entropy
 import Torch.Typed.Factories
 import Torch.Typed.Functional hiding
   ( conv2d,
@@ -79,25 +82,37 @@ import Torch.Typed.Tensor
 import Trainer
 import Prelude hiding (abs, tanh)
 
--- | (Vanilla) quaternion model is just an embedding matrix of size (vocabSize, featureSize)
---
-data Word2Quat vocabSize featureSize dtype device where
-  Word2Quat ::
+-- | Quaternion model consisting of an embedding matrix of size (vocabSize, featureSize)
+-- and an autoencoder used to learn a compression of the "articulation model" created
+-- by the successive hamilton products of tokens.  This compression approximates the
+-- algorithmic information content (AIC) of the "articulation model".  It's an open question
+-- as to the degree to which the "articulation model" can be both a model and the probability distrobution
+-- over the data ie, the next token.  In Gell-Mann, they are separate, but the distribution forms a lower bound on the
+-- complexity of a modle since any model could just be a constant distibution.
+data Word2QuatEffComplex vocabSize featureSize dtype device where
+  Word2QuatEffComplex ::
     forall vocabSize featureSize dtype device.
-    { embed0 :: Embedding 'Nothing vocabSize featureSize 'Learned dtype device
-    --   fc0 :: Linear featureSize 1 dtype device,
-    --   w2qDropout :: Dropout
+    { embed0 :: Embedding 'Nothing vocabSize featureSize 'Learned dtype device,
+      ae0 ::
+        AutoEncoder
+          featureSize
+          (Div featureSize 4)
+          (Div featureSize 4)
+          dtype
+          device
     } ->
-    Word2Quat vocabSize featureSize dtype device
+    Word2QuatEffComplex vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
--- | The initialization spec is boring in this case
-data Word2QuatSpec vocabSize featureSize dtype device where
-  Word2QuatSpec :: Word2QuatSpec vocabSize featureSize dtype device
+-- | The initialization spec takes an `alpha` parameter to control the scaling of
+-- of the two loss functions we want to use (the AIC via reconstruction error
+-- and the shannon entropy / cosine distance between "articulation model" and subsequent token.)
+-- It also take as dropout parameter to hand off to the autoencoder's initialization.
+data Word2QuatEffComplexSpec vocabSize featureSize dtype device where
+  Word2QuatEffComplexSpec :: {w2qecAlpha :: Double, w2qecDropout :: Double} -> Word2QuatEffComplexSpec vocabSize featureSize dtype device
   deriving stock (Show, Generic)
 
--- | ... we just initialize the matrix with random quaternions.
---
+-- | Initialize with quaternions and a random Autoeencoder
 instance
   ( KnownDType dtype,
     KnownDevice device,
@@ -112,15 +127,14 @@ instance
     SumDType dtype ~ dtype
   ) =>
   A.Randomizable
-    (Word2QuatSpec vocabSize featureSize dtype device)
-    (Word2Quat vocabSize featureSize dtype device)
+    (Word2QuatEffComplexSpec vocabSize featureSize dtype device)
+    (Word2QuatEffComplex vocabSize featureSize dtype device)
   where
-  sample Word2QuatSpec = do
+  sample Word2QuatEffComplexSpec {..} = do
     init' <- catQuaternions @'[vocabSize, (Div featureSize 4)] <$> initialize @vocabSize @(Div featureSize 4)
-    Word2Quat
+    Word2QuatEffComplex
       <$> A.sample (LearnedEmbeddingWithCustomInitSpec @'Nothing @vocabSize @featureSize @dtype @device init')
-    --   <*> A.sample (LinearSpec)
-    --   <*> A.sample (DropoutSpec w2qDropoutProbSpec)
+      <*> A.sample (AutoEncoderSpec w2qecDropout)
 
 -- | The forward propagation function.  It takes a model, a boolean designating dropout use (unused), and input data
 -- in the form of a list of tokens in a sequence (of `batchSize` individual sequences). output is a tensor of mean squared
@@ -134,23 +148,29 @@ instance
 -- there's zero uncertainty between them.  Conversly, if q2 comes out of nowhere, thre's higher uncertainty.
 -- The AIC (Komogorov Complexity) can be estimated by learning an autoencoder that tries to compress the quaternions
 -- themselves.  This will output a reconstruction error that is a metric of relative uncompressability and
--- approximates KC. Shhould the AIC be estimated on the quaternions of q1 and q2?  I suppose it needs to since
+-- approximates KC. Should the AIC be estimated on the quaternions of q1 and q2?  I suppose it needs to since
 -- the shannon entropy depends on both.
---
-word2Quat ::
+word2QuatEffComplex ::
   forall batchSize vocabSize featureSize dim dtype device.
   ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
     'True ~ (1 <=? (Div featureSize 4)),
     'True ~ (1 <=? batchSize),
+    KnownDType dtype,
+    SumDType dtype ~ dtype,
+    SumDTypeIsValid device dtype,
     CanNormalize '[batchSize, featureSize] device dtype,
     MeanDTypeValidation device dtype
   ) =>
-  Word2Quat vocabSize featureSize dtype device ->
+  Word2QuatEffComplex vocabSize featureSize dtype device ->
   Bool ->
   [Tensor device 'D.Int64 '[batchSize]] ->
-  IO (Tensor device dtype '[batchSize])
-word2Quat Word2Quat {..} _stochastic input = do
-  let e = reshape @'[batchSize,featureSize] . forward embed0 <$> input
+  IO (Tensor device dtype '[batchSize, featureSize], (Entropy device dtype, ReconstructionError device dtype))
+word2QuatEffComplex Word2QuatEffComplex {..} stochastic input = do
+  let e = reshape @'[batchSize, featureSize] . forward embed0 <$> input
   let r' = hamiltonReduce Nothing e
-  pure . meanDim @1 . mulScalar (1.0 / (fromIntegral $ length r') :: Double) . sum $ (\ (q1, q2) -> pow (2 :: Int) $ approxDistances q1 q2) <$> byTwos r' 
-
+  let is = meanOverSequence $ (\(q1, q2) -> unEntropy . entropy @1 $ approxDistances q1 q2) <$> byTwos r'
+  aic <- meanOverSequence <$> traverse (fmap unReconstructionError . aicMSRE ae0 stochastic) r'
+  pure (last e, (Entropy is, ReconstructionError aic))
+  where
+    meanOverSequence :: [Tensor device dtype shape] -> Tensor device dtype shape
+    meanOverSequence xs = mulScalar ((1.0 / (fromIntegral $ length xs)) :: Double) (sum xs)

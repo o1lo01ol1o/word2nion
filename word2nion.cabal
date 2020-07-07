@@ -63,7 +63,9 @@ library
   exposed-modules:    Models 
                       , Models.AutoEncoder
                       , Models.QuaternionSelfSupervised
+                      , Models.QuaternionSelfSupervisedEffectiveComplexity 
                       , Trainer
+                      , Torch.Typed.Entropy
                       , Torch.Typed.Quaternion
                       , Torch.Streamly.Dataloader
                       , Torch.Streamly.Tokenizer

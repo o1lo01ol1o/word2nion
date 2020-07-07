@@ -28,6 +28,7 @@
 module Torch.Typed.Quaternion
   ( (⦿),
     hamilton,
+    hamiltonReduce,
     initialize,
     normalize,
     innerProduct,
@@ -50,28 +51,25 @@ import Fcf.Data.List
 import Fcf.Utils
 import GHC.Generics (Generic)
 import GHC.TypeLits
-import Torch.Streamly.Dataloader
 import GHC.TypeNats ()
 import Torch.Initializers
   ( FanMode (..),
     NonLinearity (..),
     kaimingUniform,
   )
+import Torch.Streamly.Dataloader
 import Torch.TensorFactories (randIO')
 import Torch.Typed
 import qualified Prelude as P (sqrt)
 import Prelude hiding (cos, pi, sin, sqrt, sum)
 
-
 -- | The general idea here is that some dimension in a tensor will contain
--- blocks of componenets (coefficients) of quaterions.  So, if `featureSize` 
+-- blocks of componenets (coefficients) of quaterions.  So, if `featureSize`
 -- is the size of that dimension, we require that it be divisible by 4
 -- in order to "interpret" it has representing quaternions.
---
 type HasQuaternions f = ((f `Mod` 4) ~ 0)
 
--- | Blehh. This should really be in GHC.TypeLits.KnownNat.Solver but it's not. 
---
+-- | Blehh. This should really be in GHC.TypeLits.KnownNat.Solver but it's not.
 type DivisionProofs n d =
   ( n `Div` d <= n,
     Div n d + Div n d <= n,
@@ -83,7 +81,6 @@ type DivisionProofs n d =
 
 -- | This monstrosity is static proof that we can pull out and concatenate quaternion compnents
 -- from a given tensor.
---
 type HasQuaternionComponents shape dim featureSize device dtype =
   ( Narrow shape dim 0 (Div featureSize 4) ~ Eval (ApplyToLast QuaternionComponent shape),
     Narrow shape dim (featureSize `Div` 4) (Div featureSize 4) ~ Eval (ApplyToLast QuaternionComponent shape),
@@ -106,9 +103,8 @@ type HasQuaternionComponents shape dim featureSize device dtype =
   )
 
 -- | These are bits and pieces from `first-class-families`
--- to make type-level programming more expressive.  We basically 
+-- to make type-level programming more expressive.  We basically
 -- just need some basic functions to look through lists and replace values.
---
 data ApplyToLast :: (a -> Exp b) -> [a] -> Exp [a]
 
 data QuaternionComponent :: Nat -> Exp Nat
@@ -180,7 +176,6 @@ type CanNormalize shape device dtype =
 -- | Normalize to a unit quaternion.
 --
 -- TODO: orig uses "repeat" instead of expand and has an extra expand_as step . . .
---
 normalize ::
   forall featureSize dim shape device dtype.
   ( HasQuaternionComponents shape dim featureSize device dtype,
@@ -214,7 +209,7 @@ type HasHamiltonProduct device dtype shape = Eval (HasHamiltonProduct' device dt
 --        (ry' - xz' + yr' + zx')j +
 --        (rz' + xy' - yx' + zr')k +
 --
--- The operation is non-commutive.  The reader can verify the 
+-- The operation is non-commutive.  The reader can verify the
 -- following check is not due to floatingpoint errors if she wants.
 -- >>> import GHC.Exts (toList)
 -- >>> a <- initialize :: IO (Quaternions '[1,8] '(CPU,0) 'D.Float)
@@ -306,12 +301,11 @@ approxDistances q1 q2 = addScalar (1.0 :: Double) d
   where
     q1' = normalize q1
     q2' = normalize q2
-    -- Because we're dealing with groups of quaternions, this will be a vector of distances
+    -- Because we're dealing with groups of quaternions, this will be a vector of "distances"
     d = ((-1.0) * (pow (2 :: Int) (innerProduct q1' q2')))
-    
+
 -- | Little bit of typed niceness before making them disapper
 -- into the morass of "tensor"s.
---
 data Quaternions shape device dtype = Quaternions
   { quaternions_r :: Tensor device dtype shape,
     quaternions_i :: Tensor device dtype shape,
@@ -320,7 +314,6 @@ data Quaternions shape device dtype = Quaternions
   }
 
 -- | Make them disappear into the morass
---
 catQuaternions ::
   forall compShape lastDim outShape dtype device.
   ( KnownNat lastDim,
@@ -370,3 +363,25 @@ initialize = do
     randUnif = fmap ((\x -> x - 1) . (* 2)) . randIO'
     fan_in = natValI @nIn
     fan_out = natValI @nOut
+
+-- | This is technically `scanl` specialized for Tensors that we're interested in.
+-- It passes an accumulator that is the result of the previous hamilton product
+-- and uses it as one of the terms in the next hamilton product while returning each 
+-- intermediary hamiton product.
+--
+hamiltonReduce ::
+  ( lastDim ~ (Eval (Length shape) - 1),
+    (featureSize ~ LastDimVal shape),
+    HasQuaternionComponents shape dim featureSize device dtype,
+    dim ~ Eval (QuaternionDimToNarrow (Eval (Length shape)))
+  ) =>
+  Maybe (Tensor device dtype shape) ->
+  [Tensor device dtype shape] ->
+  [Tensor device dtype shape]
+hamiltonReduce Nothing (x : y : xs) = hamiltonReduce (Just $ x ⦿ y) $ y : xs
+hamiltonReduce (Just l) (x : []) = [l ⦿ x]
+hamiltonReduce (Just l) (x : y : xs) =
+  let acc = (l ⦿ x)
+   in acc : hamiltonReduce (Just acc) (y : xs)
+hamiltonReduce Nothing _ = error "hamiltonReduce: sequences must have at least two members"
+hamiltonReduce _ _ = error "hamiltonReduce: impossible"
