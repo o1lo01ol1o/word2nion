@@ -1,3 +1,4 @@
+{-# LANGUAGE ConstraintKinds #-}
 -- {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -23,7 +24,6 @@
 -- | Defines a model similar to the one defined in the word2vec papers
 -- except it is represented by quaternions and it can support aribitrary lenghts
 -- of sequences.
---
 module Models.QuaternionSelfSupervised where
 
 import Barbies
@@ -53,7 +53,6 @@ import qualified Streamly.Prelude as S
 import System.Environment
 import System.IO.Unsafe
 import System.Random
-import Torch.Streamly.Dataloader
 import qualified Torch.Autograd as A
 import qualified Torch.DType as D
 import qualified Torch.Device as D
@@ -64,6 +63,7 @@ import qualified Torch.Internal.Managed.Type.Context as ATen
 import qualified Torch.Internal.Managed.Type.Tensor as ATen
 import qualified Torch.Internal.Type as ATen
 import qualified Torch.NN as A
+import Torch.Streamly.Dataloader
 import qualified Torch.Tensor as D
 import qualified Torch.TensorFactories as D
 import Torch.Typed.Aux
@@ -73,6 +73,7 @@ import Torch.Typed.Functional hiding
     linear,
   )
 import Torch.Typed.NN
+import Torch.Typed.Optim
 import Torch.Typed.Parameter
 import Torch.Typed.Quaternion
 import Torch.Typed.Tensor
@@ -80,7 +81,6 @@ import Trainer
 import Prelude hiding (abs, tanh)
 
 -- | (Vanilla) quaternion model is just an embedding matrix of size (vocabSize, featureSize)
---
 data Word2Quat vocabSize featureSize dtype device where
   Word2Quat ::
     forall vocabSize featureSize dtype device.
@@ -97,7 +97,6 @@ data Word2QuatSpec vocabSize featureSize dtype device where
   deriving stock (Show, Generic)
 
 -- | ... we just initialize the matrix with random quaternions.
---
 instance
   ( KnownDType dtype,
     KnownDevice device,
@@ -119,8 +118,17 @@ instance
     init' <- catQuaternions @'[vocabSize, (Div featureSize 4)] <$> initialize @vocabSize @(Div featureSize 4)
     Word2Quat
       <$> A.sample (LearnedEmbeddingWithCustomInitSpec @'Nothing @vocabSize @featureSize @dtype @device init')
-    --   <*> A.sample (LinearSpec)
-    --   <*> A.sample (DropoutSpec w2qDropoutProbSpec)
+
+--   <*> A.sample (LinearSpec)
+--   <*> A.sample (DropoutSpec w2qDropoutProbSpec)
+
+type CanPropagate batchSize vocabSize featureSize dim dtype device =
+  ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
+    'True ~ (1 <=? (Div featureSize 4)),
+    'True ~ (1 <=? batchSize),
+    CanNormalize '[batchSize, featureSize] device dtype,
+    MeanDTypeValidation device dtype
+  )
 
 -- | The forward propagation function.  It takes a model, a boolean designating dropout use (unused), and input data
 -- in the form of a list of tokens in a sequence (of `batchSize` individual sequences). output is a tensor of mean squared
@@ -136,21 +144,92 @@ instance
 -- themselves.  This will output a reconstruction error that is a metric of relative uncompressability and
 -- approximates KC. Shhould the AIC be estimated on the quaternions of q1 and q2?  I suppose it needs to since
 -- the shannon entropy depends on both.
---
 word2Quat ::
   forall batchSize vocabSize featureSize dim dtype device.
-  ( HasQuaternionComponents '[batchSize, featureSize] dim featureSize device dtype,
-    'True ~ (1 <=? (Div featureSize 4)),
-    'True ~ (1 <=? batchSize),
-    CanNormalize '[batchSize, featureSize] device dtype,
-    MeanDTypeValidation device dtype
+  ( CanPropagate batchSize vocabSize featureSize dim dtype device
   ) =>
   Word2Quat vocabSize featureSize dtype device ->
   Bool ->
   [Tensor device 'D.Int64 '[batchSize]] ->
   IO (Tensor device dtype '[batchSize])
 word2Quat Word2Quat {..} _stochastic input = do
-  let e = reshape @'[batchSize,featureSize] . forward embed0 <$> input
+  let e = reshape @'[batchSize, featureSize] . forward embed0 <$> input
   let r' = hamiltonReduce Nothing e
-  pure . meanDim @1 . mulScalar (1.0 / (fromIntegral $ length r') :: Double) . sum $ (\ (q1, q2) -> pow (2 :: Int) $ approxDistances q1 q2) <$> byTwos r' 
+  pure . meanDim @1 . mulScalar (1.0 / (fromIntegral $ length r') :: Double) . sum $ (\(q1, q2) -> pow (2 :: Int) $ approxDistances q1 q2) <$> byTwos r'
 
+-- =============================================================================
+-- Training intances
+-- =============================================================================
+
+-- | The above Word2Quat datatype provides the needed model definition, but to train
+-- we need one more parameter to make sure all our operations are kosher: batchSize.
+-- We use a newtype wrapper with a "phantom type" called batchSize to do this.
+--
+newtype TrainableWord2Quat (batchSize :: Nat) vocabSize featureSize dtype device = TrainableWord2Quat {unTrainableWord2Quat :: Word2Quat vocabSize featureSize dtype device}
+
+
+-- | The metrics we're going to want to keep track of.
+-- Here, we only do loss, but you could also keep track of
+-- weight values, statistics, etc.
+--
+newtype Word2QuatMetrics device dtype f = Word2QuatMetrics
+  { word2QuatMetricCosine :: f (Tensor device dtype '[])
+  }
+  deriving stock (Generic)
+  deriving anyclass (FunctorB, TraversableB, ApplicativeB, ConstraintsB)
+
+-- | The needed types and methods to propagate inputs and score the outputs of the model
+--
+instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasMetricSpace (TrainableWord2Quat batchSize vocabSize featureSize dtype device) where
+  type Domain (TrainableWord2Quat batchSize vocabSize featureSize dtype device) = [Tensor device 'D.Int64 '[batchSize]]
+  type Codomain (TrainableWord2Quat batchSize vocabSize featureSize dtype device) = Tensor device dtype '[batchSize]
+  type MetricSpace f (TrainableWord2Quat batchSize vocabSize featureSize dtype device) = Word2QuatMetrics device dtype f
+
+  measure _ (YHat yhat) _ = Word2QuatMetrics (Identity $ meanAll yhat)
+  propagationStepM (TrainableWord2Quat m) s x = liftIO $ word2Quat m s x
+
+-- | The Training report differes in scope from the model metrics
+-- since it has access to more data, such as the current batch number
+-- (and, eg, gradient statistics)
+--
+newtype W2QTrainReport f = W2QTrainReport
+  { w2QReportBatch :: f Integer
+  }
+  deriving stock (Generic)
+  deriving anyclass (FunctorB, TraversableB, ApplicativeB, ConstraintsB)
+
+-- | This is basically boilerplate to get access to different parts of the training state and 
+-- formalize what the training state consists in.
+instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasTrainState (TrainableWord2Quat batchSize vocabSize featureSize dtype device) optim where
+  data TrainState (TrainableWord2Quat batchSize vocabSize featureSize dtype device) optim = W2QState
+    { w2QStateModel :: TrainableWord2Quat batchSize vocabSize featureSize dtype device,
+      w2QStateBatch :: Integer,
+      w2QStateOptim :: optim,
+      w2QStateLr :: Tensor device 'D.Float '[],
+      w2QStateMetrics :: Maybe (Word2QuatMetrics device dtype Identity)
+    }
+  type TrainReport f (TrainableWord2Quat batchSize vocabSize featureSize dtype device) optim = W2QTrainReport f
+  getModel = w2QStateModel
+  getOptim = w2QStateOptim
+  getTrainReport = W2QTrainReport . Identity . w2QStateBatch
+  initTrainState m o = W2QState m 0 o 0.01 Nothing
+
+-- | The actual training step.  Takes data and target in, batchwise, props the model,
+-- scores the output, and updates the parameters given an optimizer.  Here we use the Adam
+-- optimizer.
+--
+instance
+  ( CanPropagate batchSize vocabSize featureSize dim 'D.Float device,
+    SufficientlyCapable device,
+    HasTrainState (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) (Adam tensors),
+    HasMetricSpace (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device),
+    IsTrainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
+    Optimizable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients
+  ) =>
+  Trainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) (Adam tensors)
+  where
+  trainStepM (W2QState m b o lr _) (x, y) = do
+    yhat <- liftIO $ stochasticStepM m x
+    let metrics = measure Proxy yhat y
+    (m', o') <- liftIO $ runStep m o (runIdentity $ word2QuatMetricCosine metrics) lr
+    pure $ W2QState m' (b + 1) o' lr (Just metrics)
