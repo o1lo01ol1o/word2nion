@@ -27,6 +27,7 @@
 -- not here.
 module Trainer where
 
+import Control.Monad (guard)
 import Control.Monad.Catch
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Control
@@ -35,7 +36,9 @@ import Data.Functor.Identity
 import Data.Functor.Product
 import Data.Kind (Type)
 import qualified Data.Monoid.Statistics as StatM
-  ( StatMonoid,
+  ( MeanKBN,
+    StatMonoid,
+    Variance,
     addValue,
     singletonMonoid,
   )
@@ -222,6 +225,33 @@ vegaLiteMonitor ::
   SerialT m (Report (MetricSpace f model) (TrainReport g model optim)) ->
   m ()
 vegaLiteMonitor fp = S.fold (vegaLiteFold fp)
+
+-- | Wrappers to get declarative monoidal stats that jive with hkds
+newtype Mean a = Mean {unMean :: StatM.MeanKBN}
+  deriving stock (Eq, Generic)
+  deriving newtype (Monoid, Semigroup)
+
+instance StatM.StatMonoid (Mean (Tensor device 'D.Float '[])) Float where
+  addValue (Mean smp) !x = Mean (StatM.addValue smp x)
+  singletonMonoid x = Mean (StatM.singletonMonoid x)
+  {-# INLINE addValue #-}
+  {-# INLINE singletonMonoid #-}
+
+instance (Real x) => StatM.StatMonoid (Mean a) x where
+  addValue (Mean smp) !x = Mean (StatM.addValue smp x)
+  singletonMonoid x = Mean (StatM.singletonMonoid x)
+  {-# INLINE addValue #-}
+  {-# INLINE singletonMonoid #-}
+
+newtype Variance a = Variance {unVariance :: StatM.Variance}
+  deriving stock (Eq, Generic)
+  deriving newtype (Monoid, Semigroup)
+
+instance (Real x) => StatM.StatMonoid (Variance a) x where
+  addValue (Variance smp) !x = Variance (StatM.addValue smp x)
+  singletonMonoid x = Variance (StatM.singletonMonoid x)
+  {-# INLINE addValue #-}
+  {-# INLINE singletonMonoid #-}
 
 instance StatM.StatMonoid m a => StatM.StatMonoid (Const m x) a where
   addValue (Const smp) !x = Const (StatM.addValue smp x)

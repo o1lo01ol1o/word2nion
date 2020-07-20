@@ -48,24 +48,9 @@ import GHC.TypeLits.Extra
 import Generic.Data (Generically (..))
 import Graphics.Vega.VegaLite hiding (Identity)
 import Streamly
-import Streamly
-import qualified Streamly.Prelude as S
-import System.Environment
-import System.IO.Unsafe
-import System.Random
-import qualified Torch.Autograd as A
 import qualified Torch.DType as D
-import qualified Torch.Device as D
-import qualified Torch.Functional as D
-import qualified Torch.Internal.Cast as ATen
-import qualified Torch.Internal.Class as ATen
-import qualified Torch.Internal.Managed.Type.Context as ATen
-import qualified Torch.Internal.Managed.Type.Tensor as ATen
-import qualified Torch.Internal.Type as ATen
 import qualified Torch.NN as A
 import Torch.Streamly.Dataloader
-import qualified Torch.Tensor as D
-import qualified Torch.TensorFactories as D
 import Torch.Typed.Aux
 import Torch.Typed.Factories
 import Torch.Typed.Functional hiding
@@ -164,22 +149,22 @@ word2Quat Word2Quat {..} _stochastic input = do
 -- | The above Word2Quat datatype provides the needed model definition, but to train
 -- we need one more parameter to make sure all our operations are kosher: batchSize.
 -- We use a newtype wrapper with a "phantom type" called batchSize to do this.
---
 newtype TrainableWord2Quat (batchSize :: Nat) vocabSize featureSize dtype device = TrainableWord2Quat {unTrainableWord2Quat :: Word2Quat vocabSize featureSize dtype device}
-
 
 -- | The metrics we're going to want to keep track of.
 -- Here, we only do loss, but you could also keep track of
 -- weight values, statistics, etc.
---
 newtype Word2QuatMetrics device dtype f = Word2QuatMetrics
   { word2QuatMetricCosine :: f (Tensor device dtype '[])
   }
   deriving stock (Generic)
   deriving anyclass (FunctorB, TraversableB, ApplicativeB, ConstraintsB)
 
+deriving via (Barbie (Word2QuatMetrics device dtype) f) instance AllBF Semigroup f (Word2QuatMetrics device dtype) => Semigroup (Word2QuatMetrics device dtype f)
+
+deriving via (Barbie (Word2QuatMetrics device dtype) f) instance AllBF Monoid f (Word2QuatMetrics device dtype) => Monoid (Word2QuatMetrics device dtype f)
+
 -- | The needed types and methods to propagate inputs and score the outputs of the model
---
 instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasMetricSpace (TrainableWord2Quat batchSize vocabSize featureSize dtype device) where
   type Domain (TrainableWord2Quat batchSize vocabSize featureSize dtype device) = [Tensor device 'D.Int64 '[batchSize]]
   type Codomain (TrainableWord2Quat batchSize vocabSize featureSize dtype device) = Tensor device dtype '[batchSize]
@@ -191,14 +176,13 @@ instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasM
 -- | The Training report differes in scope from the model metrics
 -- since it has access to more data, such as the current batch number
 -- (and, eg, gradient statistics)
---
 newtype W2QTrainReport f = W2QTrainReport
   { w2QReportBatch :: f Integer
   }
   deriving stock (Generic)
   deriving anyclass (FunctorB, TraversableB, ApplicativeB, ConstraintsB)
 
--- | This is basically boilerplate to get access to different parts of the training state and 
+-- | This is basically boilerplate to get access to different parts of the training state and
 -- formalize what the training state consists in.
 instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasTrainState (TrainableWord2Quat batchSize vocabSize featureSize dtype device) optim where
   data TrainState (TrainableWord2Quat batchSize vocabSize featureSize dtype device) optim = W2QState
@@ -217,7 +201,6 @@ instance (CanPropagate batchSize vocabSize featureSize dim dtype device) => HasT
 -- | The actual training step.  Takes data and target in, batchwise, props the model,
 -- scores the output, and updates the parameters given an optimizer.  Here we use the Adam
 -- optimizer.
---
 instance
   ( CanPropagate batchSize vocabSize featureSize dim 'D.Float device,
     SufficientlyCapable device,
@@ -233,3 +216,55 @@ instance
     let metrics = measure Proxy yhat y
     (m', o') <- liftIO $ runStep m o (runIdentity $ word2QuatMetricCosine metrics) lr
     pure $ W2QState m' (b + 1) o' lr (Just metrics)
+
+type SummaryStats = (Mean `Product` Variance) `Product` Seq
+
+-- | Yeesh!
+trainEcCnn ::
+  forall t vocabSize featureSize batchSize m device params tensors gradients.
+  ( IsStream t,
+    MonadIO m,
+    Monad (t m),
+    MonadThrow m,
+    MonadBaseControl IO m,
+    KnownNat batchSize,
+    (1 <=? batchSize) ~ 'True,
+    (1 <=? Div featureSize 4) ~ 'True,
+    ( (Div featureSize 2 + Div featureSize 4)
+        <=? featureSize
+    )
+      ~ 'True,
+    CheckBroadcast
+      '[batchSize, Div featureSize 4]
+      '[batchSize, featureSize]
+      ( ComputeBroadcast
+          '[Div featureSize 4, batchSize]
+          '[featureSize, batchSize]
+      )
+      ~ '[batchSize, featureSize],
+    KnownNat featureSize,
+    DivisionProofs featureSize 4,
+    MeanDTypeValidation device 'D.Float,
+    IsTrainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
+    StatM.StatMonoid (Product Mean Variance (Tensor device 'D.Float '[])) Float,
+    Monoid (Product (Product Mean Variance) Seq (Tensor device 'D.Float '[]))
+  ) =>
+  (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) ->
+  (Adam tensors) ->
+  t
+    m
+    ( Domain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device),
+      Codomain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device)
+    ) ->
+  SerialT
+    m
+    ( Domain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device),
+      Codomain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device)
+    ) ->
+  t m (Report (Word2QuatMetrics device 'D.Float SummaryStats) (W2QTrainReport Maybe))
+trainEcCnn = trainer @SummaryStats @Maybe validToSingltonMonoid trainToSingltonMonoid
+  where
+    fromTensor a = Pair (StatM.singletonMonoid . toFloat . runIdentity $ a) (Seq.singleton $ runIdentity a)
+    validToSingltonMonoid :: Word2QuatMetrics device 'D.Float Identity -> Word2QuatMetrics device 'D.Float SummaryStats
+    validToSingltonMonoid (Word2QuatMetrics nll) = Word2QuatMetrics (fromTensor nll)
+    trainToSingltonMonoid = const (W2QTrainReport Nothing)
