@@ -1,5 +1,3 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveGeneric #-}
@@ -7,31 +5,39 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
 module Models.AutoEncoder where
 
 import GHC.Generics
-import GHC.TypeLits
+import GHC.TypeLits (KnownNat, Nat, type (<=?))
 import qualified Torch.DType as D
 import qualified Torch.Device as D
 import qualified Torch.NN as A
 import Torch.Typed.Aux
-import Torch.Typed.Factories
-import Torch.Typed.Functional hiding
-  ( linear,
+  ( AllDimsPositive,
+    StandardFloatingPointDTypeValidation,
   )
-import Torch.Typed.NN ()
-import Torch.Typed.NN
-import Torch.Typed.Parameter
-import Torch.Typed.Tensor
+import Torch.Typed.Factories (RandDTypeIsValid)
+import Torch.Typed.Functional
+  ( MeanDTypeValidation,
+    meanAll,
+    powScalar,
+    tanh,
+  )
+import Torch.Typed.NN (Dropout, DropoutSpec (DropoutSpec), Linear, LinearSpec (LinearSpec), dropoutForward, linearForward)
+import Torch.Typed.Parameter (Randomizable (sample))
+import Torch.Typed.Tensor (KnownDType, KnownDevice, Tensor)
 import Prelude hiding (tanh)
 
 newtype ReconstructionError device dtype = ReconstructionError {unReconstructionError :: Tensor device dtype '[]}
@@ -118,28 +124,29 @@ autoEncoder ::
   Tensor device dtype '[batchSize, inputFeatures] ->
   IO (Tensor device dtype '[batchSize, inputFeatures])
 autoEncoder AutoEncoder {..} doStochastic input =
-  return
-    . linearForward autoEncoderLayer2
-    =<< dropoutForward autoEncoderDropout doStochastic
-      . tanh
-      . linearForward autoEncoderLayer1
-    =<< dropoutForward autoEncoderDropout doStochastic
-      . tanh
-      . linearForward autoEncoderLayer0
-    =<< pure input
+  linearForward autoEncoderLayer2
+    <$> ( dropoutForward autoEncoderDropout doStochastic
+            . tanh
+            . linearForward autoEncoderLayer1
+            =<< dropoutForward autoEncoderDropout doStochastic
+              . tanh
+              . linearForward autoEncoderLayer0
+            =<< pure input
+        )
 
 -- | Approximate the upper bound of the AIC via mean-squared reconstruction error
 aicMSRE ::
-  (StandardFloatingPointDTypeValidation device dtype
-  , KnownDevice device
-  , MeanDTypeValidation device dtype
-  , (1 <=? inputFeatures) ~ 'True
-  , (1 <=? batchSize) ~ 'True
+  ( StandardFloatingPointDTypeValidation device dtype,
+    KnownDevice device,
+    MeanDTypeValidation device dtype,
+    (1 <=? inputFeatures) ~ 'True,
+    (1 <=? batchSize) ~ 'True,
+    AllDimsPositive '[batchSize, inputFeatures]
   ) =>
   AutoEncoder inputFeatures hiddenFeatures0 hiddenFeatures1 dtype device ->
   Bool ->
   Tensor device dtype '[batchSize, inputFeatures] ->
   IO (ReconstructionError device dtype)
-aicMSRE ae doStochastic input = do
+aicMSRE ae doStochastic (input :: Tensor device dtype '[batchSize, inputFeatures]) = do
   r <- autoEncoder ae doStochastic input
-  pure . ReconstructionError . meanAll $ pow (2 :: Int) (input - r)
+  pure . ReconstructionError . meanAll $ powScalar (2 :: Int) (input - r)

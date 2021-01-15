@@ -17,15 +17,24 @@
 
 module Torch.Typed.Entropy where
 
-import Fcf.Core
-import Fcf.Data.List
-import GHC.TypeLits
+import Fcf.Core (Eval)
+import Fcf.Data.List (Take)
+import GHC.TypeLits (KnownNat)
 import Torch.Typed.Aux
-import Torch.Typed.Functional hiding
-  ( dropout,
-    linear,
+  ( AllDimsPositive,
+    StandardFloatingPointDTypeValidation,
   )
-import Torch.Typed.Tensor
+import Torch.Typed.Functional
+  ( DropValue,
+    MeanDTypeValidation,
+    SumDType,
+    SumDTypeIsValid,
+    log,
+    meanAll,
+    mulScalar,
+    sumDim,
+  )
+import Torch.Typed.Tensor (All, KnownDType, Tensor)
 import Prelude hiding (log, sum, tanh)
 
 newtype Entropy device dtype = Entropy {unEntropy :: Tensor device dtype '[]}

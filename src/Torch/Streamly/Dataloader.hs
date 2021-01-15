@@ -1,60 +1,72 @@
-{-# LANGUAGE BangPatterns               #-}
-{-# LANGUAGE ConstraintKinds            #-}
-{-# LANGUAGE DataKinds                  #-}
-{-# LANGUAGE DeriveAnyClass             #-}
-{-# LANGUAGE DeriveGeneric              #-}
-{-# LANGUAGE DerivingStrategies         #-}
-{-# LANGUAGE FlexibleContexts           #-}
-{-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE MultiParamTypeClasses      #-}
-{-# LANGUAGE OverloadedLabels           #-}
-{-# LANGUAGE OverloadedStrings          #-}
-{-# LANGUAGE ScopedTypeVariables        #-}
-{-# LANGUAGE StandaloneDeriving         #-}
-{-# LANGUAGE Strict                     #-}
-{-# LANGUAGE StrictData                 #-}
-{-# LANGUAGE TemplateHaskell            #-}
-{-# LANGUAGE TypeApplications           #-}
-{-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE UndecidableInstances       #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE OverloadedLabels #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE Strict #-}
+{-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- | Module defines types and functions for dataset streams
--- to be fead to models during training.
+-- to be fead to models during training.  `trainStream` provides continuous stream of tokens and a stream of negatively sampled tokens
+-- from a given TokenStreamDataset.
 module Torch.Streamly.Dataloader
   ( TokenStreamDataset (..),
     dataset,
     trainStream,
-    byTwos
+    byTwos,
   )
 where
 
-import           Control.Monad.Catch                   (MonadCatch)
-import           Control.Monad.IO.Class                (MonadIO, liftIO)
-import           Data.Bifunctor                        (bimap)
-import           Data.IntervalMap.Generic.Strict       (IntervalMap)
-import qualified Data.IntervalMap.Generic.Strict       as IM
-import qualified Data.IntervalMap.Generic.Strict       as IvMap
-import           Data.List                             (sortOn)
-import           Data.Map.Monoidal.Strict              (MonoidalMap)
-import qualified Data.Map.Monoidal.Strict              as MMap
-import qualified Data.Maybe                            as Maybe (mapMaybe)
-import           Data.Monoid                           (First (..), Sum (..))
-import qualified Data.Set                              as Set
-import qualified Data.Text                             as T
-import           Foreign.Storable
-import           GHC.Generics                          (Generic)
-import           Path
-import           Streamly
-import qualified Streamly.Data.Fold                    as FL
-import qualified Streamly.Internal.Data.Fold           as FL
-import           Streamly.Internal.Data.Unicode.Stream (decodeUtf8)
-import qualified Streamly.Internal.FileSystem.File     as File
-import qualified Streamly.Internal.Memory.Array        as SA
-import           Streamly.Prelude                      as S hiding (minimum,
-                                                             tail)
-import           System.Random                         (randomRIO)
-import           Torch.Streamly.Tokenizer
+import Control.Monad.Catch (MonadCatch)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Bifunctor (bimap)
+import Data.IntervalMap.Generic.Strict (IntervalMap)
+import qualified Data.IntervalMap.Generic.Strict as IM
+import qualified Data.IntervalMap.Generic.Strict as IvMap
+import Data.List (sortOn)
+import Data.Map.Monoidal.Strict (MonoidalMap)
+import qualified Data.Map.Monoidal.Strict as MMap
+import qualified Data.Maybe as Maybe (mapMaybe)
+import Data.Monoid (First (..), Sum (..))
+import qualified Data.Set as Set
+import qualified Data.Text as T
+import Foreign.Storable (Storable)
+import GHC.Generics (Generic)
+import Path (File, Path, toFilePath)
+import Streamly (AheadT, MonadAsync, aheadly, serially)
+import qualified Streamly.Data.Fold as FL
+import qualified Streamly.Internal.Data.Fold as FL
+import Streamly.Internal.Data.Unicode.Stream (decodeUtf8)
+import qualified Streamly.Internal.FileSystem.File as File
+import qualified Streamly.Internal.Memory.Array as SA
+import Streamly.Prelude as S
+  ( chunksOf,
+    concatMap,
+    concatMapM,
+    fold,
+    fromList,
+    map,
+    mapMaybe,
+    mapMaybeM,
+    splitOnSuffix,
+    toList,
+    yield,
+  )
+import System.Random (randomRIO)
+import Torch.Streamly.Tokenizer (Token (Symbol, Token), tokenize)
 
 -- | Represents a dataset of some token type `a`
 data TokenStreamDataset a = TokenStreamDataset
@@ -99,6 +111,7 @@ instance Ord e => IM.Interval (StrictTuple e e) e where
   upperBound (StrictTuple _ b) = b
   rightClosed _ = False
 
+-- | Use our tokenizer on a file. Expects text not structured data.
 tokenStream :: (MonadAsync m, MonadCatch m) => Path a File -> AheadT m Token
 tokenStream fp =
   S.concatMap (S.fromList . tokenize . T.pack)
@@ -118,9 +131,9 @@ newtype SymbolOrToken = SymbolOrToken {unSymbolOrToken :: Either Char T.Text}
 filterAndLowercase :: (MonadAsync m) => AheadT m Token -> AheadT m (Either Char T.Text)
 filterAndLowercase = S.mapMaybe go
   where
-    go (Token t)  = Just . Right $ T.toLower t
+    go (Token t) = Just . Right $ T.toLower t
     go (Symbol t) = Just . Left $ t
-    go _          = Nothing
+    go _ = Nothing
 
 -- | Given a function for maybe extracting keys and a function
 -- for extracting values, produce a `Fold` to a `MonoidalMap` of keys and values
@@ -140,6 +153,7 @@ tokenFrequencies :: (MonadAsync m, Ord a) => AheadT m a -> m (MonoidalMap a (Sum
 tokenFrequencies = S.fold (groupBy Just (const $ Sum 1)) . serially . aheadly
 
 {-# INLINE byTwos #-}
+
 -- | Two by two . . .
 --
 -- >>> byTwos [1..10]
@@ -152,8 +166,8 @@ toIvMap total mm =
   IvMap.fromList . Maybe.mapMaybe go . byTwos $ xs
   where
     xs = bimap Just ((/ fromIntegral total) . fromIntegral . getSum) <$> sortOn snd (MMap.toAscList mm)
-    go ((Just a, lb), (_, ub)) = Just $ ((StrictTuple lb ub), a)
-    go _                       = Nothing
+    go ((Just a, lb), (_, ub)) = Just (StrictTuple lb ub, a)
+    go _ = Nothing
 
 -- | Make a dataset from a file.  This implementaiton is a bit annoying because whatever we put in the
 -- Array needs to have a Storeable instance.  This means that we can't do unbounded containers
@@ -173,23 +187,23 @@ dataset fp = do
     fromJust _ = error "dataset: it is impossible that fromJust is partial here!  Something is wrong!"
 
 -- | Subsample infrequent words occurding to a probability derived from the words frequency
--- in the corpora. The original paper used the same caclulation as below on
+-- in the corpora. The original word2vec paper used the same caclulation as below on
 -- the input word itself.  Since we're considering lists of words, we use the minimum value
 -- of all the words in the list since we want to increase the chance that rare words are retained.
 subsampleFilter :: (MonadIO m, Ord a) => Int -> MonoidalMap a (Sum Int) -> [a] -> m (Maybe [a])
 subsampleFilter total mm d = do
   (p :: Double) <- liftIO $ randomRIO (0, 1)
-  pure $ case (minimum $ calc mm <$> d) > p of
-    True  -> Nothing -- Higer values of calc should be higher values of discarding, so if p is less than that value, discard.
+  pure $ case minimum (calc mm <$> d) > p of
+    True -> Nothing -- Higer values of calc should be higher values of discarding, so if p is less than that value, discard.
     False -> Just d
   where
-    calc mm' v = 1 - (sqrt (t / f_wi))
+    calc mm' v = 1 - sqrt (t / f_wi)
       where
         t = 10e-5 -- threashold from the paper
         f_wi = fromIntegral (getSum (mm' MMap.! v)) / fromIntegral total -- Frequency of word i
 
 negativeSample :: (MonadAsync m) => IntervalMap (StrictTuple Double Double) a -> AheadT m a
-negativeSample im = S.concatMapM (const return ()) $ do
+negativeSample im = S.concatMapM return $ do
   (p :: Double) <- liftIO $ randomRIO (0, 1)
   pure . S.yield . snd . IvMap.findLast $ IvMap.containing im p
 
@@ -198,7 +212,7 @@ negativeSampleStream im = negativeSample im <> negativeSampleStream im
 
 -- | Infinite stream of contiguous chunks of size `s`
 shufflingStreamOfSize :: (MonadAsync m, Storable a) => Int -> SA.Array a -> AheadT m [a]
-shufflingStreamOfSize s = S.chunksOf s FL.toList . (shufflingStreamOfSize' s)
+shufflingStreamOfSize s = S.chunksOf s FL.toList . shufflingStreamOfSize' s
 
 -- | Infinite stream of samples from an array of some size
 shufflingStreamOfSize' :: (MonadAsync m, Storable a) => Int -> SA.Array a -> AheadT m a
@@ -206,8 +220,8 @@ shufflingStreamOfSize' s a = sample s a <> shufflingStreamOfSize' s a
 
 -- | Randomly samples a slice of size `size` from the array, returning it as a stream.
 sample :: (MonadAsync m, Storable a) => Int -> SA.Array a -> AheadT m a
-sample size a = S.concatMapM (const return ()) $ do
-  start <- liftIO $ randomRIO (0, (SA.length a - size))
+sample size a = S.concatMapM return $ do
+  start <- liftIO $ randomRIO (0, SA.length a - size)
   pure . S.fromList $ fmap (SA.unsafeIndex a) [start .. (start + size)]
 
 -- | Make a training stream of token indicies of size windowSize and a negative

@@ -1,19 +1,25 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+
 -- | Helpers for tokenizing text.
 -- Slightly adapted from: https://hackage.haskell.org/package/glider-nlp-0.4/docs/src/Glider-NLP-Tokenizer.html#tokenize
 module Torch.Streamly.Tokenizer
   ( Token (..),
     getTokens,
-    tokenize
+    tokenize,
   )
 where
 
 import Data.Char
-import qualified Data.List as List
-import Data.Text
+  ( isAlphaNum,
+    isDigit,
+    isLetter,
+    isPunctuation,
+    isSpace,
+    isSymbol,
+  )
+import Data.Text (Text, dropWhile, head, null, tail, takeWhile)
 import Prelude hiding (dropWhile, head, null, tail, takeWhile)
-
 
 -- | Token type
 data Token
@@ -41,10 +47,6 @@ getTokens [] = []
 getTokens (x : xs) = case x of
   Token a -> a : getTokens xs
   _ -> getTokens xs
-
--- | Convert all words to the same case
-foldCase :: [Text] -> [Text]
-foldCase = List.map toCaseFold
 
 -- | Parser type
 type Parser = Text -> [(Token, Text)]

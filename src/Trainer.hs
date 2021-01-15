@@ -15,6 +15,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
@@ -27,13 +28,13 @@
 -- not here.
 module Trainer where
 
-import Control.Monad (guard)
-import Control.Monad.Catch
+import Control.Lens.TH (makePrisms)
+import Control.Monad.Catch (MonadThrow)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Control.Monad.Trans.Control
-import Data.Functor.Const
-import Data.Functor.Identity
-import Data.Functor.Product
+import Control.Monad.Trans.Control ()
+import Data.Functor.Const (Const (Const))
+import Data.Functor.Identity (Identity)
+import Data.Functor.Product (Product)
 import Data.Kind (Type)
 import qualified Data.Monoid.Statistics as StatM
   ( MeanKBN,
@@ -42,18 +43,51 @@ import qualified Data.Monoid.Statistics as StatM
     addValue,
     singletonMonoid,
   )
-import Data.Proxy
+import Data.Proxy (Proxy (..))
 import GHC.Generics (Generic)
-import qualified GHC.List as P
-import Graphics.Vega.VegaLite hiding (Mean, Variance)
-import Streamly
+import Graphics.Vega.VegaLite (VegaLite, toHtmlFile)
+import Streamly (IsStream, SerialT)
 import qualified Streamly.Data.Fold as FL
 import Streamly.Internal.Data.Fold (mkFold)
-import Streamly.Prelude as S hiding (length, replicate)
+import Streamly.Prelude as S
+  ( concatMap,
+    concatMapM,
+    fold,
+    fromList,
+    map,
+    mapM,
+    postscanlM',
+    yield,
+  )
 import qualified Torch.DType as D
 import qualified Torch.Internal.Class as ATen
 import qualified Torch.Tensor as D
-import Torch.Typed hiding (dropout, linear)
+import Torch.Typed
+  ( Apply,
+    BasicArithmeticDTypeIsValid,
+    ComparisonDTypeIsValid,
+    HFoldrM,
+    HList,
+    HMap',
+    HMapM',
+    HUnfoldM,
+    HUnfoldMRes,
+    HasGrad,
+    KnownDevice,
+    MakeIndependent,
+    MonadBaseControl,
+    Optimizer,
+    Parameterized,
+    RandDTypeIsValid,
+    StandardFloatingPointDTypeValidation,
+    SumDTypeIsValid,
+    Tensor (toDynamic),
+    TensorListFold,
+    TensorListUnfold,
+    ToDependent,
+    ZerosLike,
+    toCPU,
+  )
 
 type Two f a = Product f f a
 
@@ -127,7 +161,7 @@ class HasTrainState someModel optim where
 class
   ( forall param tensors device gradients.
     Optimizable model param tensors device optim gradients =>
-    (Parameterized model param),
+    (Parameterized model),
     HasTrainState model optim,
     HasMetricSpace model
   ) =>
@@ -163,7 +197,7 @@ type Optimizable model params tensors device optim gradients =
     tensors ~ gradients,
     HMap' ToDependent params tensors,
     ATen.Castable (HList gradients) [D.ATenTensor],
-    Parameterized model params,
+    Parameterized model,
     Optimizer optim gradients tensors 'D.Float device,
     HMap' ZerosLike params gradients,
     HMapM' IO MakeIndependent tensors params,
@@ -183,10 +217,10 @@ data Report a b = Validation a | Batch b
   deriving stock (Eq, Ord, Show, Generic)
 
 trainer ::
-  forall f g t model optim m.
-  ( IsStream t,
-    Trainable model optim,
+  forall f g model t optim m.
+  ( Trainable model optim,
     MonadIO m,
+    IsStream t,
     Monad (t m),
     Monoid (MetricSpace f model),
     MonadThrow m,
@@ -207,22 +241,18 @@ trainer validationAggf trainAggf m o ts vs = S.concatMap (trainAndValidReport m 
       S.map Validation . tuckMonad $
         fmap S.yield (S.fold FL.mconcat (S.map validationAggf $ validationStream False m' vs))
 
-vegaLiteFold :: (Monitorable a [PropertySpec], Monitorable b [PropertySpec], MonadIO m) => FilePath -> FL.Fold m (Report a b) ()
-vegaLiteFold fp = mkFold go (return (mempty, mempty)) outM
+vegaLiteFold :: (Monitorable [Report a b] VegaLite, MonadIO m) => FilePath -> FL.Fold m (Report a b) ()
+vegaLiteFold fp = mkFold go (return mempty) outM
   where
-    outM (as, bs) = do
-      let props = toVegaLite $ P.concatMap render as <> P.concatMap render bs
-      liftIO $ toHtmlFile fp props
-    go (as, bs) (Validation a) = pure (a : as, bs)
-    go (as, bs) (Batch b) = pure (as, b : bs)
+    outM as = liftIO $ toHtmlFile fp $ render as
+    go as r = pure (r : as)
 
 vegaLiteMonitor ::
   ( MonadIO m,
-    Monitorable (MetricSpace f model) [PropertySpec],
-    Monitorable (TrainReport g model optim) [PropertySpec]
+    Monitorable [Report a b] VegaLite
   ) =>
   FilePath ->
-  SerialT m (Report (MetricSpace f model) (TrainReport g model optim)) ->
+  SerialT m (Report a b) ->
   m ()
 vegaLiteMonitor fp = S.fold (vegaLiteFold fp)
 
@@ -258,3 +288,5 @@ instance StatM.StatMonoid m a => StatM.StatMonoid (Const m x) a where
   singletonMonoid x = Const (StatM.singletonMonoid x)
   {-# INLINE addValue #-}
   {-# INLINE singletonMonoid #-}
+
+makePrisms ''Report
