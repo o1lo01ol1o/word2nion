@@ -1,4 +1,4 @@
-cabal-version:       2.4
+cabal-version:       2.1
 name:                word2nion
 version:             0.0.0.0
 synopsis:            See README for more info
@@ -20,14 +20,15 @@ source-repository head
   location:            https://github.com/o1lo01ol1o/word2nion.git
 
 common common-options
-  build-depends:       base ^>= 4.13.0.0
-                      , hasktorch >= 0.2 && < 0.3
+  build-depends:       base >= 4.7 && < 5
+                   , hasktorch >= 0.2 && < 0.3
                       , libtorch-ffi
                       , first-class-families
                       , ghc-typelits-extra
                      , ghc-typelits-knownnat
                      , ghc-typelits-natnormalise
                      , mtl
+                     , lens
   ghc-options:         -Wall
                        -Wcompat
                        -Widentities
