@@ -96,6 +96,16 @@ if [[ ! -d 'one-billion-words' ]]; then
     cd ..
 fi
 
+if [[ ! -d 'cc100' ]]; then
+    mkdir -p cc100
+    cd cc100
+
+    wget --no-proxy http://data.statmt.org/cc-100/en.txt.xz
+    tar xzvf en.txt.xz
+
+    cd ..
+fi
+
 echo "---"
 echo "Happy language modeling :)"
 popd
