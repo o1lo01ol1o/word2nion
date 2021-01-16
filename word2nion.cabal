@@ -1,113 +1,108 @@
-cabal-version:       2.1
-name:                word2nion
-version:             0.0.0.0
-synopsis:            See README for more info
-description:         See README for more info
-homepage:            https://github.com/o1lo01ol1o/word2nion
-bug-reports:         https://github.com/o1lo01ol1o/word2nion/issues
-license:             NONE
-author:              o1lo01ol1o
-maintainer:          o1lo01ol1o <tim.pierson@gmail.com>
-copyright:           2020 o1lo01ol1o
-category:            ML
-build-type:          Simple
-extra-doc-files:     README.md
-                     CHANGELOG.md
-tested-with:         GHC == 8.8.3
+cabal-version:   2.1
+name:            word2nion
+version:         0.0.0.0
+synopsis:        See README for more info
+description:     See README for more info
+homepage:        https://github.com/o1lo01ol1o/word2nion
+bug-reports:     https://github.com/o1lo01ol1o/word2nion/issues
+license:
+author:          o1lo01ol1o
+maintainer:      o1lo01ol1o <tim.pierson@gmail.com>
+copyright:       2020 o1lo01ol1o
+category:        ML
+build-type:      Simple
+extra-doc-files:
+  README.md
+  CHANGELOG.md
+
+tested-with:     GHC ==8.8.3
 
 source-repository head
-  type:                git
-  location:            https://github.com/o1lo01ol1o/word2nion.git
+  type:     git
+  location: https://github.com/o1lo01ol1o/word2nion.git
 
 common common-options
-  build-depends:       base >= 4.7 && < 5
-                   , hasktorch >= 0.2 && < 0.3
-                      , libtorch-ffi
-                      , first-class-families
-                      , ghc-typelits-extra
-                     , ghc-typelits-knownnat
-                     , ghc-typelits-natnormalise
-                     , mtl
-                     , lens
-  ghc-options:         -Wall
-                       -Wcompat
-                       -Widentities
-                       -Wincomplete-uni-patterns
-                       -Wunused-packages
-                       -Wincomplete-record-updates
-                       -fplugin GHC.TypeLits.Normalise 
-                       -fplugin GHC.TypeLits.KnownNat.Solver 
-                       -fplugin GHC.TypeLits.Extra.Solver 
-                       -fconstraint-solver-iterations=0 
-                       -fdicts-strict
-                       -fmax-worker-args=16
-                       -fspec-constr-recursive=16
-                      --  -fplugin=Fusion.Plugin
-                       -O2
-                      --  -fllvm
-                       -rtsopts
-  if impl(ghc >= 8.0)
-    ghc-options:       -Wredundant-constraints
-  if impl(ghc >= 8.2)
-    ghc-options:       -fhide-source-paths
-  if impl(ghc >= 8.4)
-    ghc-options:       -Wmissing-export-lists
-                       -Wpartial-fields
-  if impl(ghc >= 8.8)
-    ghc-options:       -Wmissing-deriving-strategies
+  build-depends:
+    , base                       >=4.7 && <5
+    , first-class-families
+    , ghc-typelits-extra
+    , ghc-typelits-knownnat
+    , ghc-typelits-natnormalise
+    , hasktorch                  ^>=0.2
+    , lens
+    , libtorch-ffi
+    , mtl
 
-  default-language:    Haskell2010
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-uni-patterns
+    -Wunused-packages -Wincomplete-record-updates -fplugin
+    GHC.TypeLits.Normalise -fplugin GHC.TypeLits.KnownNat.Solver
+    -fplugin GHC.TypeLits.Extra.Solver -fconstraint-solver-iterations=0
+    -fdicts-strict -fmax-worker-args=16 -fspec-constr-recursive=16 -O2
+    -rtsopts
+
+  --  -fplugin=Fusion.Plugin
+  --  -fllvm
+  if impl(ghc >=8.0)
+    ghc-options: -Wredundant-constraints
+
+  if impl(ghc >=8.2)
+    ghc-options: -fhide-source-paths
+
+  if impl(ghc >=8.4)
+    ghc-options: -Wmissing-export-lists -Wpartial-fields
+
+  if impl(ghc >=8.8)
+    ghc-options: -Wmissing-deriving-strategies
+
+  default-language: Haskell2010
 
 library
-  import:              common-options
-  hs-source-dirs:      src
-  exposed-modules:    Models 
-                      , Models.AutoEncoder
-                      , Models.QuaternionSelfSupervised
-                      , Models.QuaternionSelfSupervisedEffectiveComplexity 
-                      , Trainer
-                      , Torch.Typed.Entropy
-                      , Torch.Typed.Quaternion
-                      , Torch.Streamly.Dataloader
-                      , Torch.Streamly.Tokenizer
-  build-depends:       text
-                      , bytestring
-                      , streamly >=0.7.1
-                      , transformers
-                      , transformers-base
-                      , exceptions
-                      , safe-exceptions
-                      , bifunctor 
-                      , generic-data 
-                      , barbies 
-                      , vector
-                      , IntervalMap
-                      , monoid-statistics
-                      , statistics
-                      , path
-                      , fusion-plugin
-                      , monoidal-containers
-                      , containers
-                      , bzlib
-                      , random
-                      , monad-control
-                      , hvega >= 0.9.0.1
+  import:          common-options
+  hs-source-dirs:  src
+  exposed-modules:
+    Models
+    Models.QuaternionSelfSupervised
+    Torch.Streamly.Dataloader
+    Torch.Streamly.Tokenizer
+    Torch.Typed.Quaternion
+    Trainer
+
+  build-depends:
+    , barbies
+    , bifunctor
+    , bytestring
+    , bzlib
+    , containers
+    , exceptions
+    , fusion-plugin
+    , generic-data
+    , hvega                >=0.9.0.1
+    , IntervalMap
+    , monad-control
+    , monoid-statistics
+    , monoidal-containers
+    , path
+    , random
+    , safe-exceptions
+    , statistics
+    , streamly             >=0.7.1
+    , text
+    , transformers
+    , transformers-base
+    , vector
 
 executable word2nion
-  import:              common-options
-  hs-source-dirs:      app
-  main-is:             Main.hs
-  build-depends:       word2nion
-  ghc-options:         -threaded
-                       -rtsopts
-                       -with-rtsopts=-N
+  import:         common-options
+  hs-source-dirs: app
+  main-is:        Main.hs
+  build-depends:  word2nion
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
 
 test-suite word2nion-test
-  import:              common-options
-  type:                exitcode-stdio-1.0
-  hs-source-dirs:      test
-  main-is:             Spec.hs
-  build-depends:       word2nion
-  ghc-options:         -threaded
-                       -rtsopts
-                       -with-rtsopts=-N
+  import:         common-options
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test
+  main-is:        Spec.hs
+  build-depends:  word2nion
+  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
