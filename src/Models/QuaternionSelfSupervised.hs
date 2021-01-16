@@ -24,16 +24,29 @@
 
 -- | Defines a model similar to the one defined in the word2vec papers
 -- except it is represented by quaternions and it can support aribitrary lenghts
--- of sequences.
+-- of sequences. 
+-- TODO: The constraints necessary in the typeclass instances could undboutably be simplified.
+-- if they can't, it's another mark against using the typeclass machinery such crazy polymorphism.
 module Models.QuaternionSelfSupervised where
 
 import Barbies
+  ( AllBF,
+    ApplicativeB,
+    Barbie (Barbie),
+    ConstraintsB,
+    FunctorB,
+    Rec (Rec),
+    TraversableB,
+  )
 import Control.Lens ((^.), (^?), _1, _2)
+import Control.Monad ((<=<))
 import Control.Monad.Catch (MonadThrow)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Control (MonadBaseControl)
+import Data.Foldable (Foldable (foldl'))
 import Data.Functor.Identity (Identity (..))
 import Data.Functor.Product (Product (..))
+import Data.Maybe (mapMaybe)
 import qualified Data.Monoid.Statistics as StatM
 import Data.Proxy (Proxy (Proxy))
 import Data.Sequence (Seq)
@@ -58,14 +71,14 @@ import Graphics.Vega.VegaLite
     mark,
     position,
     toVegaLite,
-    vConcat,
     width,
   )
-import Streamly (IsStream, Semigroup, SerialT)
-import Streamly.Prelude as S (foldl', mapMaybe)
+import Streamly (IsStream, SerialT)
 import qualified Torch.DType as D
+import Torch.HList (HList, HMap', HMapM')
 import qualified Torch.NN as A
 import Torch.Streamly.Dataloader (byTwos)
+import Torch.Typed (HasGrad, MakeIndependent, ToDependent)
 import Torch.Typed.Aux (StandardFloatingPointDTypeValidation)
 import Torch.Typed.Factories (RandDTypeIsValid)
 import Torch.Typed.Functional
@@ -84,7 +97,7 @@ import Torch.Typed.NN
     HasForward (forward),
   )
 import Torch.Typed.Optim (Adam, runStep)
-import Torch.Typed.Parameter (Randomizable (sample))
+import Torch.Typed.Parameter (Parameters, Randomizable (sample))
 import Torch.Typed.Quaternion
   ( CanNormalize,
     DivisionProofs,
@@ -279,6 +292,29 @@ instance
   getTrainReport = W2QTrainReport . Identity . w2QStateBatch
   initTrainState m o = W2QState m 0 o 0.01 Nothing
 
+type HasGradEtc model gradients =
+  ( HasGrad
+      ( HList
+          ( Parameters
+              model
+          )
+      )
+      (HList gradients),
+    HMap'
+      ToDependent
+      ( Parameters
+          model
+      )
+      gradients,
+    HMapM'
+      IO
+      MakeIndependent
+      gradients
+      ( Parameters
+          model
+      )
+  )
+
 -- | The actual training step.  Takes data and target in, batchwise, props the model,
 -- scores the output, and updates the parameters given an optimizer.
 instance
@@ -287,7 +323,8 @@ instance
     HasTrainState (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) (Adam tensors),
     HasMetricSpace (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device),
     IsTrainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
-    Optimizable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients
+    Optimizable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
+    HasGradEtc (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) gradients
   ) =>
   Trainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) (Adam tensors)
   where
@@ -336,7 +373,8 @@ trainEcNN ::
     MeanDTypeValidation device 'D.Float,
     IsTrainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
     StatM.StatMonoid (Product Mean Variance (Tensor device 'D.Float '[])) Float,
-    Monoid (Product (Product Mean Variance) Seq (Tensor device 'D.Float '[]))
+    Monoid (Product (Product Mean Variance) Seq (Tensor device 'D.Float '[])),
+    HasGradEtc (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) gradients
   ) =>
   TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device ->
   Adam tensors ->
@@ -390,12 +428,14 @@ vegaLitesimpleHistogram xName lineFormat lineData h w =
           width w
         ]
 
+--  | TODO: HVega can't take a stream of data so it has to aggregate every call to `render`
+-- This is wasteful but whatever.
 instance Monitorable [Report (Word2QuatMetrics device 'D.Float SummaryStats) (W2QTrainReport Maybe)] VegaLite where
   render as =
-    toVegaLite
-      [ dataFromRows mempty (dataRows mempty),
-        vConcat [lineFor 640 480 "Nll-Mean" "Batch", lineFor 640 480 "Nll-Std" "Batch"]
+    toVegaLite $
+      [ dataFromRows mempty dataRows
       ]
+        <> lineFor 640 480 "Batch" "Wha?"
     where
       histoFor h w xName =
         let enc =
@@ -417,14 +457,11 @@ instance Monitorable [Report (Word2QuatMetrics device 'D.Float SummaryStats) (W2
               height h,
               width w
             ]
-      batches' = mapMaybe (^? _Batch . w2QReportBatch) as
-      dataRows :: [DataRow] -> [DataRow]
-      dataRows = foldl' go id (zip [1 ..] batches')
+      batches' = mapMaybe (w2QReportBatch <=< (^? _Batch)) as
+      dataRows = (\f -> f mempty) $ foldl' go id batches'
         where
-          go ls (b, vs) =
-            let stdB = StatM.calcStddev $ getStdPart v
-                meanB = StatM.calcMean $ getMeanPart v
-             in ls . dataRow [("Batch", Number b), ("Nll-Std", Number stdB), ("Nll-Mean", Number meanB)]
+          go ls batchNumber =
+            ls . dataRow [("Batch", Number (fromIntegral batchNumber))]
 
 trainAndMonitor ::
   forall batchSize featureSize vocabSize m device params tensors gradients.
@@ -451,7 +488,8 @@ trainAndMonitor ::
     MeanDTypeValidation device 'D.Float,
     IsTrainable (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
     StatM.StatMonoid (Product Mean Variance (Tensor device 'D.Float '[])) Float,
-    Monoid (Product (Product Mean Variance) Seq (Tensor device 'D.Float '[]))
+    Monoid (Product (Product Mean Variance) Seq (Tensor device 'D.Float '[])),
+    HasGradEtc (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device) gradients
   ) =>
   FilePath ->
   TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device ->

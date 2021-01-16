@@ -147,7 +147,7 @@ type instance Eval (QuaternionComponent n) = Div n 4
 
 type instance Eval (Quaternion n) = n * 4
 
-type instance Eval (ApplyToLast f '[]) = '[]
+type instance Eval (ApplyToLast _ '[]) = '[]
 
 type instance Eval (ApplyToLast f (x ': '[])) = Eval (f x) ': '[]
 
@@ -206,7 +206,8 @@ type CanNormalize shape device dtype =
 
 -- | Normalize to a unit quaternion.
 --
--- TODO: orig uses "repeat" instead of expand and has an extra expand_as step . . .
+-- TODO: orig uses "repeat" instead of expand and has an extra expand_as step will need to check that 
+-- this implementation is morally correct
 normalize ::
   forall featureSize dim shape device dtype.
   ( HasQuaternionComponents shape dim featureSize device dtype,
