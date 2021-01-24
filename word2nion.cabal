@@ -63,6 +63,7 @@ library
   exposed-modules:
     Models
     Models.QuaternionSelfSupervised
+    Models.Word2Vec
     Torch.Streamly.Dataloader
     Torch.Streamly.Tokenizer
     Torch.Typed.Quaternion

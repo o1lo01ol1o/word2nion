@@ -24,7 +24,7 @@
 
 -- | Defines a model similar to the one defined in the word2vec papers
 -- except it is represented by quaternions and it can support aribitrary lenghts
--- of sequences. 
+-- of sequences.
 -- TODO: The constraints necessary in the typeclass instances could undboutably be simplified.
 -- if they can't, it's another mark against using the typeclass machinery such crazy polymorphism.
 module Models.QuaternionSelfSupervised where
