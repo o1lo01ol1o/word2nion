@@ -1,4 +1,4 @@
-cabal-version:   2.1
+cabal-version:   3.0
 name:            word2nion
 version:         0.0.0.0
 synopsis:        See README for more info
@@ -25,6 +25,7 @@ common common-options
   build-depends:
     , base                       >=4.7 && <5
     , first-class-families
+    , fusion-plugin
     , ghc-typelits-extra
     , ghc-typelits-knownnat
     , ghc-typelits-natnormalise
@@ -32,6 +33,8 @@ common common-options
     , lens
     , libtorch-ffi
     , mtl
+    , streamly             >=0.7.1
+
 
   ghc-options:
     -Wall -Wcompat -Widentities -Wincomplete-uni-patterns
@@ -70,13 +73,13 @@ library
     Trainer
 
   build-depends:
+    , attoparsec
     , barbies
     , bifunctor
     , bytestring
     , bzlib
     , containers
     , exceptions
-    , fusion-plugin
     , generic-data
     , hvega                >=0.9.0.1
     , IntervalMap
@@ -87,7 +90,6 @@ library
     , random
     , safe-exceptions
     , statistics
-    , streamly             >=0.7.1
     , text
     , transformers
     , transformers-base
@@ -98,7 +100,13 @@ executable word2nion
   hs-source-dirs: app
   main-is:        Main.hs
   build-depends:  word2nion
-  ghc-options:    -threaded -rtsopts -with-rtsopts=-N
+                , path
+  ghc-options:    -Wall -Wcompat -Widentities -Wincomplete-uni-patterns
+    -Wunused-packages -Wincomplete-record-updates -fplugin
+    GHC.TypeLits.Normalise -fplugin GHC.TypeLits.KnownNat.Solver
+    -fplugin GHC.TypeLits.Extra.Solver -fconstraint-solver-iterations=0
+    -fdicts-strict -fmax-worker-args=16 -fspec-constr-recursive=16 -O2
+    -rtsopts -threaded -with-rtsopts=-N 
 
 test-suite word2nion-test
   import:         common-options

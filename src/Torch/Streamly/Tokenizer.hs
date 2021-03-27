@@ -1,8 +1,10 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Helpers for tokenizing text.
 -- Slightly adapted from: https://hackage.haskell.org/package/glider-nlp-0.4/docs/src/Glider-NLP-Tokenizer.html#tokenize
+-- FIXME: Attoparser doesn't liek recursion.  rewrite in attoparsec
 module Torch.Streamly.Tokenizer
   ( Token (..),
     getTokens,
@@ -10,99 +12,88 @@ module Torch.Streamly.Tokenizer
   )
 where
 
-import Data.Char
-  ( isAlphaNum,
+import Control.Applicative (Alternative ((<|>)))
+import Data.Attoparsec.ByteString.Char8 as AttoChar
+  ( Parser,
+    anyChar,
+    double,
     isDigit,
-    isLetter,
-    isPunctuation,
-    isSpace,
-    isSymbol,
+    many1',
+    parseOnly,
+    satisfy,
+    space,
+    takeWhile1, endOfInput, many'
   )
-import Data.Text (Text, dropWhile, head, null, tail, takeWhile)
-import Prelude hiding (dropWhile, head, null, tail, takeWhile)
+import Data.ByteString (ByteString)
+import Data.Char (isAlpha, isPunctuation, isSymbol)
+import Prelude
+import qualified Data.Attoparsec as Atto
+import Data.Word (Word8)
 
 -- | Token type
 data Token
-  = Token Text
-  | Number Text
+  = Token ByteString
+  | Number (Either ByteString Double)
   | Punctuation Char
   | Symbol Char
   | Whitespace
-  | Unknown Char
-  deriving stock (Eq, Show)
+  | Unknown Word8
+  deriving stock (Eq, Ord, Show)
 
 -- | Split text into tokens
 --
--- > tokenize "one two." == [Token "one", Whitespace, Token "two", "Separator "."]
-tokenize :: Text -> [Token]
-tokenize xs = case allParser xs of
-  [(v, out)] -> v : tokenize out
-  _ -> []
+-- >>> tokenize "The year was 1984, and the world was a better place."
+-- >>> Right [Token "The",Whitespace,Token "year",Whitespace,Token "was",Whitespace,Number (Right 1984.0),Punctuation ',',Whitespace,Token "and",Whitespace,Token "the",Whitespace,Token "world",Whitespace,Token "was",Whitespace,Token "a",Whitespace,Token "better",Whitespace,Token "place",Punctuation '.']
+tokenize :: ByteString -> Either String [Token]
+tokenize = AttoChar.parseOnly (allParser <* endOfInput)
 
 -- | Extract all words from tokens
 --
--- > getTokens "one two." == ["one", "two"]
-getTokens :: [Token] -> [Text]
+-- >>> getTokens [Token "one", Whitespace, Token "two", "Separator "."]
+-- >>> ["one", "two"]
+getTokens :: [Token] -> [ByteString]
 getTokens [] = []
 getTokens (x : xs) = case x of
   Token a -> a : getTokens xs
   _ -> getTokens xs
 
--- | Parser type
-type Parser = Text -> [(Token, Text)]
-
 -- | Parse word
-wordParser :: Parser
-wordParser xs
-  | null xs = []
-  | isLetter (head xs) = [(Token (takeWhile isAlphaNum xs), dropWhile isAlphaNum xs)]
-  | otherwise = []
+wordParser :: AttoChar.Parser Token
+wordParser = Token <$> AttoChar.takeWhile1 isAlpha
 
 -- | Parse number
-numberParser :: Parser
-numberParser xs
-  | null xs = []
-  | isDigit (head xs) = [(Number (takeWhile isDigit xs), dropWhile isDigit xs)]
-  | otherwise = []
+numberParser :: AttoChar.Parser Token
+numberParser = doubleParser
+
+doubleParser :: AttoChar.Parser Token
+doubleParser = Number . Right <$> AttoChar.double
 
 -- | Parse punctuation
-punctuationParser :: Parser
-punctuationParser xs
-  | null xs = []
-  | isPunctuation (head xs) = [(Punctuation (head xs), tail xs)]
-  | otherwise = []
+punctuationParser :: AttoChar.Parser Token
+punctuationParser = Punctuation <$> AttoChar.satisfy isPunctuation
 
 -- | Parse symbol
-symbolParser :: Parser
-symbolParser xs
-  | null xs = []
-  | isSymbol (head xs) = [(Symbol (head xs), tail xs)]
-  | otherwise = []
+symbolParser :: AttoChar.Parser Token
+symbolParser = Symbol <$> AttoChar.satisfy isSymbol
 
 -- | Parse whitespaces
-spaceParser :: Parser
-spaceParser xs
-  | null xs = []
-  | isSpace (head xs) = [(Whitespace, xs)]
-  | otherwise = []
+spaceParser :: AttoChar.Parser Token
+spaceParser = Whitespace <$ AttoChar.space
 
 -- | Parse single char
-charParser :: Parser
-charParser xs
-  | null xs = []
-  | otherwise = [(Unknown (head xs), tail xs)]
+charParser :: AttoChar.Parser Token
+charParser = Unknown <$> Atto.anyWord8
 
 -- | Apply all parsers to the input.
 -- Return result from the first which will parse correctly given text.
-allParser :: Parser
-allParser xs = case wordParser xs of
-  [(v, out)] -> [(v, out)]
-  _ -> case numberParser xs of
-    [(v, out)] -> [(v, out)]
-    _ -> case punctuationParser xs of
-      [(v, out)] -> [(v, out)]
-      _ -> case symbolParser xs of
-        [(v, out)] -> [(v, out)]
-        _ -> case spaceParser xs of
-          [(v, out)] -> [(v, out)]
-          _ -> charParser xs
+allParser :: AttoChar.Parser [Token]
+allParser = AttoChar.many' eachParser
+
+eachParser :: AttoChar.Parser Token
+eachParser =
+  wordParser
+    <|> numberParser
+    <|> punctuationParser
+    <|> symbolParser
+    <|> spaceParser
+    <|> charParser

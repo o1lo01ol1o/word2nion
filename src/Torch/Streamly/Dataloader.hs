@@ -24,15 +24,20 @@
 -- from a given TokenStreamDataset.
 module Torch.Streamly.Dataloader
   ( TokenStreamDataset (..),
+    SymbolOrToken (..),
     dataset,
     trainStream,
     byTwos,
+    inBatchesOf,
   )
 where
 
 import Control.Monad.Catch (MonadCatch)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Bifunctor (bimap)
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Internal as BS (c2w)
+import qualified Data.ByteString.Lazy as BSL
 import Data.IntervalMap.Generic.Strict (IntervalMap)
 import qualified Data.IntervalMap.Generic.Strict as IM
 import qualified Data.IntervalMap.Generic.Strict as IvMap
@@ -41,19 +46,20 @@ import Data.Map.Monoidal.Strict (MonoidalMap)
 import qualified Data.Map.Monoidal.Strict as MMap
 import qualified Data.Maybe as Maybe (mapMaybe)
 import Data.Monoid (First (..), Sum (..))
-import qualified Data.Set as Set
 import qualified Data.Text as T
+import Data.Text.Encoding.Error (lenientDecode)
+import qualified Data.Text.Encoding as T
+import Data.Word (Word8)
 import Foreign.Storable (Storable)
 import GHC.Generics (Generic)
 import Path (File, Path, toFilePath)
 import Streamly (AheadT, MonadAsync, aheadly, serially)
 import qualified Streamly.Data.Fold as FL
 import qualified Streamly.Internal.Data.Fold as FL
-import Streamly.Internal.Data.Unicode.Stream (decodeUtf8)
 import qualified Streamly.Internal.FileSystem.File as File
 import qualified Streamly.Internal.Memory.Array as SA
 import Streamly.Prelude as S
-  ( chunksOf,
+  (mapM,  chunksOf,
     concatMap,
     concatMapM,
     fold,
@@ -114,16 +120,38 @@ instance Ord e => IM.Interval (StrictTuple e e) e where
 -- | Use our tokenizer on a file. Expects text not structured data.
 tokenStream :: (MonadAsync m, MonadCatch m) => Path a File -> AheadT m Token
 tokenStream fp =
-  S.concatMap (S.fromList . tokenize . T.pack)
-    . S.splitOnSuffix (`Set.member` splitChars) FL.toList
-    . decodeUtf8
+  S.concatMap (S.fromList . handleIt . tokenize . BSL.toStrict . Builder.toLazyByteString . foldMap Builder.word8)
+   . S.splitOnSuffix splitChars FL.toList
     $ File.toBytes (toFilePath fp)
+  where
+    handleIt (Left err) = error (show err)
+    handleIt (Right bs) = bs
 
 {-# INLINE splitChars #-}
-splitChars :: Set.Set Char
-splitChars = s
+splitChars :: Word8 -> Bool
+splitChars s
+  | s == periodMark = True
+  | s == questionMark = True
+  | s == exclaimationMark = True
+  | otherwise = False
+
+{-# INLINE questionMark #-}
+questionMark :: Word8
+questionMark = m
   where
-    !s = Set.fromList ['.', '!', '?']
+    !m = BS.c2w '?'
+
+{-# INLINE periodMark #-}
+periodMark :: Word8
+periodMark = m
+  where
+    !m = BS.c2w '.'
+
+{-# INLINE exclaimationMark #-}
+exclaimationMark :: Word8
+exclaimationMark = m
+  where
+    !m = BS.c2w '!'
 
 newtype SymbolOrToken = SymbolOrToken {unSymbolOrToken :: Either Char T.Text}
   deriving stock (Eq, Ord, Generic)
@@ -131,7 +159,7 @@ newtype SymbolOrToken = SymbolOrToken {unSymbolOrToken :: Either Char T.Text}
 filterAndLowercase :: (MonadAsync m) => AheadT m Token -> AheadT m (Either Char T.Text)
 filterAndLowercase = S.mapMaybe go
   where
-    go (Token t) = Just . Right $ T.toLower t
+    go (Token t) = Just . Right $ T.toLower . T.decodeUtf8With lenientDecode $ t
     go (Symbol t) = Just . Left $ t
     go _ = Nothing
 
@@ -232,3 +260,6 @@ trainStream windowSize (TokenStreamDataset indexLookup a mm im c) = (trainStream
     trainStream' = S.mapMaybeM (subsampleFilter c (MMap.mapKeys (fromJust . getFirst . (indexLookup MMap.!)) mm)) $ shufflingStreamOfSize windowSize a
     fromJust (Just v) = v
     fromJust _ = error "trainStream: it is impossible that fromJust is partial here!  Something is wrong!"
+
+inBatchesOf :: Monad m => Int -> AheadT m [Int] -> AheadT m [[Int]]
+inBatchesOf s = S.chunksOf s FL.toList

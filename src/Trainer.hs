@@ -34,7 +34,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Control ()
 import Data.Functor.Const (Const (Const))
 import Data.Functor.Identity (Identity)
-import Data.Functor.Product (Product)
+import Data.Functor.Product (Product (..))
 import Data.Kind (Type)
 import qualified Data.Monoid.Statistics as StatM
   ( MeanKBN,
@@ -299,6 +299,13 @@ instance (Real x) => StatM.StatMonoid (Variance a) x where
   singletonMonoid x = Variance (StatM.singletonMonoid x)
   {-# INLINE addValue #-}
   {-# INLINE singletonMonoid #-}
+
+instance StatM.StatMonoid (Variance (Tensor device 'D.Float '[])) Float where
+  addValue (Variance smp) !x = Variance (StatM.addValue smp x)
+  singletonMonoid x = Variance (StatM.singletonMonoid x)
+  {-# INLINE addValue #-}
+  {-# INLINE singletonMonoid #-}
+
 
 instance StatM.StatMonoid m a => StatM.StatMonoid (Const m x) a where
   addValue (Const smp) !x = Const (StatM.addValue smp x)

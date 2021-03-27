@@ -1,0 +1,8 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "lib:word2nion"
+    - path: "./test"
+      component: "test:word2nion"
+    - path: "./app"
+      component: "exe:word2nion"
