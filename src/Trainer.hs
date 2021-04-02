@@ -52,6 +52,7 @@ import Streamly.Internal.Data.Fold (mkFold)
 import Streamly.Prelude as S
   ( concatMap,
     concatMapM,
+    drain,
     fold,
     fromList,
     map,
@@ -88,6 +89,10 @@ import Torch.Typed
     ZerosLike,
     toCPU,
   )
+
+data (:/\) a b = !a :/\ !b
+
+infix 5 :/\
 
 type Two f a = Product f f a
 
@@ -225,7 +230,7 @@ type IsTrainable model params tensors device opt gradients =
     Optimizable model params tensors device opt gradients
   )
 
-data Report a b = Validation a | Batch b
+data Report a b = Validation !a | Batch !b
   deriving stock (Eq, Ord, Show, Generic)
 
 -- | Takes a funciton to map over validation states and train states prior to `mappend`ing them,
@@ -258,8 +263,12 @@ trainer validationAggf trainAggf m o ts vs = S.concatMap (trainAndValidReport m 
 vegaLiteFold :: (Monitorable [Report a b] VegaLite, MonadIO m) => FilePath -> FL.Fold m (Report a b) ()
 vegaLiteFold fp = mkFold go (return mempty) outM
   where
-    outM as = liftIO $ toHtmlFile fp $ render as
-    go as r = pure (r : as)
+    outM _ = pure ()
+    go as r = do
+      let as' = r : as
+      -- liftIO $ putStrLn $ "Writing to:  " <> fp
+      liftIO $ toHtmlFile fp $ render as'
+      pure as'
 
 vegaLiteMonitor ::
   ( MonadIO m,
@@ -305,7 +314,6 @@ instance StatM.StatMonoid (Variance (Tensor device 'D.Float '[])) Float where
   singletonMonoid x = Variance (StatM.singletonMonoid x)
   {-# INLINE addValue #-}
   {-# INLINE singletonMonoid #-}
-
 
 instance StatM.StatMonoid m a => StatM.StatMonoid (Const m x) a where
   addValue (Const smp) !x = Const (StatM.addValue smp x)

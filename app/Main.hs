@@ -4,7 +4,6 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-
 {-# LANGUAGE FlexibleContexts #-}
 module Main (main) where
 
@@ -41,10 +40,12 @@ import Torch.Typed
     Parameterized (flattenParameters),
     Randomizable (sample),
     Tensor (..),
-    zeros,
+    zeros, natValI
   )
 import Torch.Typed.Optim
 import Debug.Trace
+type BatchSize = 1024
+
 main :: IO ()
 main = do
   initModel <- model
@@ -53,15 +54,17 @@ main = do
   print $ Prelude.length $ tokenStreamDatasetToken train
   print $ tokenStreamDatasetOccurances train
   valid <- validSet
-  trainAndMonitor @1 @5
+  trainAndMonitor @BatchSize @5
     "mon.html"
     (TrainableWord2Vec initModel)
     initOptim
-    (niceData2FoulTensorDataSet @'(D.CPU, 0) @1 . inBatchesOf 1 . fst $ trainStream 5 train)
-    (niceData2FoulTensorDataSet @'(D.CPU, 0) @1 . inBatchesOf 1 . fst $ trainStream 5 valid)
+    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs . fst $ trainStream 5 train)
+    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs . fst $ trainStream 5 valid)
+  where 
+    bs = natValI @BatchSize
 
-model :: IO (Word2Vec 5 27335 128 'D.Float '( 'CPU, 0))
-model = sample $ Word2VecSpec @5 @27335 @128 @'D.Float @'( 'D.CPU, 0)
+model :: IO (Word2Vec 5 27335 256 'D.Float '( 'CPU, 0))
+model = sample $ Word2VecSpec @5 @27335 @256  @'D.Float @'( 'D.CPU, 0)
 
 trainSet :: IO (TokenStreamDataset SymbolOrToken)
 trainSet = dataset [absfile|/Users/timpierson/arity/word2nion/data/wikitext-2/train.txt|]
@@ -76,13 +79,8 @@ niceData2FoulTensorDataSet ::
   SerialT m ([Tensor device 'D.Int64 '[batchSize]], Tensor device 'D.Float '[batchSize])
 niceData2FoulTensorDataSet =
   aheadly 
-    . S.mapM (go .
+    . S.map (
       ( (, zeros)
           . fmap (UnsafeMkTensor . asTensor . fmap (fromIntegral :: Int -> Int64))
           . Data.List.transpose
       ))
-  where
-    go :: MonadIO m => ([Tensor device 'D.Int64 '[batchSize]], Tensor device 'D.Float '[batchSize]) -> m ([Tensor device 'D.Int64 '[batchSize]], Tensor device 'D.Float '[batchSize])
-    go x = do
-      liftIO $ print $ length $ fst x
-      pure x

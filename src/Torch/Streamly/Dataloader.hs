@@ -58,19 +58,8 @@ import qualified Streamly.Data.Fold as FL
 import qualified Streamly.Internal.Data.Fold as FL
 import qualified Streamly.Internal.FileSystem.File as File
 import qualified Streamly.Internal.Memory.Array as SA
-import Streamly.Prelude as S
-  (mapM,  chunksOf,
-    concatMap,
-    concatMapM,
-    fold,
-    fromList,
-    map,
-    mapMaybe,
-    mapMaybeM,
-    splitOnSuffix,
-    toList,
-    yield,
-  )
+import qualified Streamly.Prelude as S
+
 import System.Random (randomRIO)
 import Torch.Streamly.Tokenizer (Token (Symbol, Token), tokenize)
 
@@ -218,7 +207,7 @@ dataset fp = do
 -- in the corpora. The original word2vec paper used the same caclulation as below on
 -- the input word itself.  Since we're considering lists of words, we use the minimum value
 -- of all the words in the list since we want to increase the chance that rare words are retained.
-subsampleFilter :: (MonadIO m, Ord a) => Int -> MonoidalMap a (Sum Int) -> [a] -> m (Maybe [a])
+subsampleFilter :: (MonadIO m, Ord a, Show a) => Int -> MonoidalMap a (Sum Int) -> [a] -> m (Maybe [a])
 subsampleFilter total mm d = do
   (p :: Double) <- liftIO $ randomRIO (0, 1)
   pure $ case minimum (calc mm <$> d) > p of
@@ -228,7 +217,10 @@ subsampleFilter total mm d = do
     calc mm' v = 1 - sqrt (t / f_wi)
       where
         t = 10e-5 -- threashold from the paper
-        f_wi = fromIntegral (getSum (mm' MMap.! v)) / fromIntegral total -- Frequency of word i
+        lkp = case MMap.lookup v mm' of 
+              Just v' -> v' 
+              Nothing -> error ("Failsauce: " <> show d)
+        f_wi = fromIntegral (getSum lkp) / fromIntegral total -- Frequency of word i
 
 negativeSample :: (MonadAsync m) => IntervalMap (StrictTuple Double Double) a -> AheadT m a
 negativeSample im = S.concatMapM return $ do
@@ -257,9 +249,11 @@ sample size a = S.concatMapM return $ do
 trainStream :: (MonadAsync m, Ord a) => Int -> TokenStreamDataset a -> (AheadT m [Int], AheadT m Int)
 trainStream windowSize (TokenStreamDataset indexLookup a mm im c) = (trainStream', negativeSampleStream im)
   where
-    trainStream' = S.mapMaybeM (subsampleFilter c (MMap.mapKeys (fromJust . getFirst . (indexLookup MMap.!)) mm)) $ shufflingStreamOfSize windowSize a
+    trainStream' = S.mapMaybeM (subsampleFilter c (MMap.mapKeys (fromJust . getFirst . (indexLookup MMap.!)) mm)) 
+       $ shufflingStreamOfSize windowSize a
     fromJust (Just v) = v
     fromJust _ = error "trainStream: it is impossible that fromJust is partial here!  Something is wrong!"
+
 
 inBatchesOf :: Monad m => Int -> AheadT m [Int] -> AheadT m [[Int]]
 inBatchesOf s = S.chunksOf s FL.toList
