@@ -504,5 +504,5 @@ trainAndMonitor ::
     ( Domain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device),
       Codomain (TrainableWord2Quat batchSize vocabSize featureSize 'D.Float device)
     ) ->
-  m ()
+  m (Maybe (Report (Word2QuatMetrics device 'D.Float SummaryStats) (W2QTrainReport Maybe)))
 trainAndMonitor fp m o tr vs = vegaLiteMonitor fp $ trainEcNN m o tr vs

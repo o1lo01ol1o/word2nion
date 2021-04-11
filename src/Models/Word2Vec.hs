@@ -73,7 +73,7 @@ import Graphics.Vega.VegaLite
 import Data.Bitraversable
 import Streamly (IsStream, SerialT)
 import qualified Torch.DType as D
-import Torch.Functional as F (Dim (Dim), cat, cosineSimilarity, view)
+import Torch.Functional as F (Dim (Dim), cat, cosineSimilarity, view, subScalar)
 import Torch.HList (HList, HMap', HMapM', HZipWith3)
 import Torch.Initializers
   ( FanMode (FanIn),
@@ -112,6 +112,7 @@ import Torch.Typed
     powScalar,
     reshape,
     runStep,
+    mulScalar,
     shape,
     toFloat,
     toDependent,
@@ -124,6 +125,7 @@ import Torch.Typed.Parameter
     Randomizable (..),
     ToDependent,
   )
+import Torch.Typed.Optim (Optimizer)
 import Trainer
   ( HasMetricSpace
       ( Codomain,
@@ -197,23 +199,27 @@ word2Vec ::
     MeanDTypeValidation device dtype,
     (1 <=? batchSize) ~ 'True,
     (1 <=? windowSize) ~ 'True,
+    KnownDevice device,
     AllDimsPositive '[windowSize -1, windowSize, batchSize]
   ) =>
   Word2Vec windowSize vocabSize featureSize dtype device ->
   Bool ->
-  [Tensor device 'D.Int64 '[batchSize]] ->
+  ([Tensor device 'D.Int64 '[batchSize]], [Tensor device 'D.Int64 '[batchSize]])  ->
   IO (Tensor device dtype '[batchSize])
-word2Vec Word2Vec {..} _stochastic input = do
+word2Vec Word2Vec {..} _stochastic (input, negSamp) = do
   let input' = reshape @'[batchSize, windowSize] $ UnsafeMkTensor @device @'D.Int64 @'[windowSize, batchSize] $ F.cat (Dim 0) $ fmap toDynamic input
-      e = forward embed0 input'
-      (heads, i, tails) = getWindows' $ toDynamic e
+      negSamp' = reshape @'[batchSize, windowSize] $ UnsafeMkTensor @device @'D.Int64 @'[windowSize, batchSize] $ F.cat (Dim 0) $ fmap toDynamic negSamp
+      (heads, i, tails) = getWindows' . toDynamic $ forward embed0 input'
       i' = view [batchSize, 1, featureSize] i
-      heads' = cosSim i' (reshapeTopOrBottom heads) 
-      tails' = cosSim i' (reshapeTopOrBottom tails)
-  pure . meanDim @0 $ reshape @'[(windowSize - 1), batchSize] $
-     powScalar (2 :: Int) (UnsafeMkTensor @_ @_ @'[batchSize, windowSize - 1, 1] (F.cat (Dim 1) ([heads', tails'])))
+      heads' = similarityScore i' (reshapeTopOrBottom heads) 
+      tails' = similarityScore i' (reshapeTopOrBottom tails)
+      negSampLoss = meanDim @0 $ reshape @'[windowSize, batchSize] . powScalar (2 :: Int)  . UnsafeMkTensor @_ @_ @'[batchSize, windowSize] . dissimilarityScore i' . toDynamic $ forward embed0 negSamp'
+      sampLoss = meanDim @0 $ reshape @'[(windowSize - 1), batchSize] $ powScalar (2 :: Int) (UnsafeMkTensor @_ @_ @'[batchSize, windowSize - 1, 1] (F.cat (Dim 1) ([heads', tails'])))
+  pure $ mulScalar (0.5 :: Float) (negSampLoss + sampLoss)
   where
-    cosSim = cosineSimilarity (Dim 2) 1e-8
+    cosSim' = cosineSimilarity (Dim 2) 1e-8
+    similarityScore t = subScalar (1 :: Int) . cosSim' t
+    dissimilarityScore t = subScalar (0 :: Int) . cosSim' t
     windowSize = natValI @windowSize
     batchSize = natValI @batchSize
     featureSize = natValI @featureSize
@@ -259,7 +265,7 @@ instance
   where
   type
     Domain (TrainableWord2Vec batchSize windowSize vocabSize featureSize dtype device) =
-      [Tensor device 'D.Int64 '[batchSize]]
+      ([Tensor device 'D.Int64 '[batchSize]], [Tensor device 'D.Int64 '[batchSize]])
   type
     Codomain (TrainableWord2Vec batchSize windowSize vocabSize featureSize dtype device) =
       Tensor device dtype '[batchSize]
@@ -302,7 +308,7 @@ instance
       getLoss ts' = case w2VStateMetrics ts' of 
           Nothing -> 0 
           Just (Word2VecMetrics (Identity loss)) -> Tensor.asValue $ toDynamic loss
-  initTrainState m o = W2VState m 0 o 0.1 Nothing
+  initTrainState m o = W2VState m 0 o 1e-3 Nothing
 
 type HasGradEtc model gradients =
   ( HasGrad
@@ -328,29 +334,13 @@ type HasGradEtc model gradients =
   )
 
 -- | There's gotta be an alias for this whack-a-mole
-type CanUseAdam batchSize windowSize vocabSize params featureSize device gradients =
-  ( HZipWith3
-      (AdamParameterUpdate device 'D.Float)
-      gradients
-      gradients
-      gradients
-      gradients,
-    HMap'
-      ZerosLike
-      '[Parameter device 'D.Float '[vocabSize, featureSize]]
-      gradients,
-    HMap' AdamBiasAdjustment gradients gradients,
-    HZipWith
-      AdamMomentum2Update
-      gradients
-      '[Tensor device 'D.Float '[vocabSize, featureSize]]
-      gradients,
-    HZipWith
-      AdamMomentum1Update
-      gradients
-      '[Tensor device 'D.Float '[vocabSize, featureSize]]
-      gradients,
-    HasGrad
+type HasOptimizer windowSize batchSize params vocabSize featureSize optim gradients device = (Optimizer
+                      optim
+                      '[Tensor device 'D.Float '[vocabSize, featureSize]]
+                      gradients
+                      'D.Float
+                      device,
+                      HasGrad
       (HList params)
       (HList '[Tensor device 'D.Float '[vocabSize, featureSize]]),
     HasGrad
@@ -408,23 +398,21 @@ type CanUseAdam batchSize windowSize vocabSize params featureSize device gradien
       gradients
       '[Parameter device 'D.Float '[vocabSize, featureSize]],
     gradients
-      ~ '[Tensor device 'D.Float '[vocabSize, featureSize]]
-  )
-
+      ~ '[Tensor device 'D.Float '[vocabSize, featureSize]])
 instance
   ( SufficientlyCapable device,
     (1 <=? batchSize) ~ 'True,
     (1 <=? windowSize) ~ 'True,
-    CanUseAdam batchSize windowSize vocabSize params featureSize device gradients,
+    HasOptimizer windowSize batchSize params vocabSize featureSize optim gradients device,
     AllDimsPositive '[windowSize -1, batchSize],
     All KnownNat '[featureSize, vocabSize, batchSize, windowSize],
-    HasTrainState (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) (Adam tensors),
+    HasTrainState (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) optim,
     HasMetricSpace (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device),
-    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
-    Optimizable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients,
+    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device optim gradients,
+    Optimizable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device optim gradients,
     HasGradEtc (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) gradients
   ) =>
-  Trainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) (Adam tensors)
+  Trainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) optim
   where
   trainStepM (W2VState m b o lr _) (x, y) = do
     yhat <- liftIO $ stochasticStepM m x
@@ -434,12 +422,12 @@ instance
 
 -- | yeesh!
 trainW2V ::
-  forall batchSize windowSize featureSize vocabSize t m device params tensors gradients.
+  forall batchSize windowSize featureSize vocabSize t m device params optim gradients.
   ( IsStream t,
     MonadIO m,
     Monad (t m),
     MonadThrow m,
-    CanUseAdam batchSize windowSize vocabSize params featureSize device gradients,
+    HasOptimizer windowSize batchSize params vocabSize featureSize optim gradients device,
     AllDimsPositive '[windowSize -1, batchSize],
     MonadBaseControl IO m,
     (1 <=? batchSize) ~ 'True,
@@ -447,10 +435,10 @@ trainW2V ::
     All KnownNat '[featureSize, vocabSize, batchSize, windowSize],
     MeanDTypeValidation device 'D.Float,
     HasGradEtc (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) gradients,
-    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients
+    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params '[Tensor device 'D.Float '[vocabSize, featureSize]] device optim gradients
   ) =>
   TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device ->
-  Adam tensors ->
+    optim ->
   t
     m
     ( Domain (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device),
@@ -502,22 +490,22 @@ instance Monitorable [Report (Word2VecMetrics device 'D.Float Seq) (W2VTrainRepo
             ls . dataRow [("Batch", Number (fromIntegral batchNumber)), ("Loss", Number (float2Double loss))]
 
 trainAndMonitor ::
-  forall batchSize windowSize featureSize vocabSize m device params tensors gradients.
+  forall batchSize windowSize featureSize vocabSize m device params optim tensors gradients.
   ( MonadIO m,
     MonadThrow m,
     AllDimsPositive '[windowSize -1, batchSize],
     MonadBaseControl IO m,
     (1 <=? batchSize) ~ 'True,
     (1 <=? windowSize) ~ 'True,
-    CanUseAdam batchSize windowSize vocabSize params featureSize device gradients,
+    HasOptimizer windowSize batchSize params vocabSize featureSize optim gradients device,
     All KnownNat '[featureSize, vocabSize, batchSize, windowSize],
     MeanDTypeValidation device 'D.Float,
     HasGradEtc (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) gradients,
-    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device (Adam tensors) gradients
+    IsTrainable (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device) params tensors device optim gradients
   ) =>
   FilePath ->
   TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device ->
-  Adam tensors ->
+  optim ->
   SerialT
     m
     ( Domain (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device),
@@ -528,7 +516,7 @@ trainAndMonitor ::
     ( Domain (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device),
       Codomain (TrainableWord2Vec batchSize windowSize vocabSize featureSize 'D.Float device)
     ) ->
-  m ()
+  m (Maybe (Report (Word2VecMetrics device 'D.Float Seq) (W2VTrainReport Maybe)))
 trainAndMonitor fp m o tr vs = vegaLiteMonitor fp . S.mapM go $ trainW2V m o tr vs
   where 
     go (Batch x) = do 
@@ -537,4 +525,3 @@ trainAndMonitor fp m o tr vs = vegaLiteMonitor fp . S.mapM go $ trainW2V m o tr 
     go (Validation x) = do 
       liftIO . print $ fmap (Tensor.asValue @Double . toDynamic) $ toList $ word2VecMetricCosine x
       pure (Validation x)
--- debug print the report values here.

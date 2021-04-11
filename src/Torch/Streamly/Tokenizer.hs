@@ -1,7 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
-
+{-# OPTIONS_GHC -O2 #-}
 -- | Helpers for tokenizing text.
 -- Slightly adapted from: https://hackage.haskell.org/package/glider-nlp-0.4/docs/src/Glider-NLP-Tokenizer.html#tokenize
 -- FIXME: Attoparser doesn't liek recursion.  rewrite in attoparsec
@@ -40,7 +40,7 @@ data Token
   | Unknown Word8
   deriving stock (Eq, Ord, Show)
 
--- | Split text into tokens
+-- | Split text into tokens or return an error string from attoparsec.
 --
 -- >>> tokenize "The year was 1984, and the world was a better place."
 -- >>> Right [Token "The",Whitespace,Token "year",Whitespace,Token "was",Whitespace,Number (Right 1984.0),Punctuation ',',Whitespace,Token "and",Whitespace,Token "the",Whitespace,Token "world",Whitespace,Token "was",Whitespace,Token "a",Whitespace,Token "better",Whitespace,Token "place",Punctuation '.']
@@ -84,6 +84,16 @@ spaceParser = Whitespace <$ AttoChar.space
 charParser :: AttoChar.Parser Token
 charParser = Unknown <$> Atto.anyWord8
 
+-- | Parse the '<unk>' tag
+unkParser :: AttoChar.Parser Token
+unkParser = Token <$> do 
+  _l <- AttoChar.satisfy $ (==) '<'
+  _u <- AttoChar.satisfy $ (==) 'u'
+  _n <- AttoChar.satisfy $ (==) 'n'
+  _k <- AttoChar.satisfy $ (==) 'k'
+  _r <- AttoChar.satisfy $ (==) '>'
+  pure "<unk>"
+
 -- | Apply all parsers to the input.
 -- Return result from the first which will parse correctly given text.
 allParser :: AttoChar.Parser [Token]
@@ -91,7 +101,8 @@ allParser = AttoChar.many' eachParser
 
 eachParser :: AttoChar.Parser Token
 eachParser =
-  wordParser
+  wordParser 
+    <|> unkParser
     <|> numberParser
     <|> punctuationParser
     <|> symbolParser

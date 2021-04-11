@@ -1,15 +1,19 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE FlexibleContexts #-}
+
 module Main (main) where
 
 import Control.Monad.IO.Class (MonadIO, liftIO)
+import Data.Bifunctor (Bifunctor (second), bimap)
 import Data.Int (Int64)
 import Data.List (transpose)
+import Data.Maybe (fromMaybe)
+import Debug.Trace
 import GHC.TypeLits (KnownNat)
 import Models.Word2Vec
   ( TrainableWord2Vec (TrainableWord2Vec),
@@ -20,16 +24,19 @@ import Models.Word2Vec
 import Path (Abs, File, absfile)
 import Streamly
   ( AheadT,
+    MonadAsync,
     SerialT,
-    aheadly, MonadAsync
+    aheadly,
   )
 import qualified Streamly.Prelude as S
 import qualified Torch.DType as D
 import qualified Torch.Device as D
 import Torch.Streamly.Dataloader
-  ( SymbolOrToken,
+  ( NegativeSample (unNegativeSample),
+    SymbolOrToken (unSymbolOrToken),
     TokenStreamDataset (..),
     dataset,
+    debugPrintTokenStream,
     inBatchesOf,
     trainStream,
   )
@@ -40,31 +47,40 @@ import Torch.Typed
     Parameterized (flattenParameters),
     Randomizable (sample),
     Tensor (..),
-    zeros, natValI
+    natValI,
+    zeros,
   )
 import Torch.Typed.Optim
-import Debug.Trace
-type BatchSize = 1024
+import Data.Int (Int32)
+type EmebddingDimension = 256
+
+type BatchSize = 128
+
+type WindowSize = 5
 
 main :: IO ()
 main = do
   initModel <- model
-  let initOptim = mkAdam 0 0.9 0.999 (flattenParameters initModel)
+  let initOptim = mkAdam 0 0.9 0.999 (flattenParameters initModel) -- GD
   train <- trainSet
   print $ Prelude.length $ tokenStreamDatasetToken train
   print $ tokenStreamDatasetOccurances train
   valid <- validSet
-  trainAndMonitor @BatchSize @5
+  trainAndMonitor @BatchSize @WindowSize
     "mon.html"
     (TrainableWord2Vec initModel)
     initOptim
-    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs . fst $ trainStream 5 train)
-    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs . fst $ trainStream 5 valid)
-  where 
+    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs $ trainStream ws train)
+    (niceData2FoulTensorDataSet @'(D.CPU, 0) @BatchSize . inBatchesOf bs $ trainStream ws valid)
+  where
     bs = natValI @BatchSize
+    ws = natValI @WindowSize
 
-model :: IO (Word2Vec 5 27335 256 'D.Float '( 'CPU, 0))
-model = sample $ Word2VecSpec @5 @27335 @256  @'D.Float @'( 'D.CPU, 0)
+debugPrintTokenStream' :: (MonadAsync m) => TokenStreamDataset SymbolOrToken -> AheadT m [Int32] -> AheadT m [Int32]
+debugPrintTokenStream' = debugPrintTokenStream (fromMaybe (Left ' ') . fmap unSymbolOrToken)
+
+model :: IO (Word2Vec WindowSize 27335 EmebddingDimension 'D.Float '( 'CPU, 0))
+model = sample $ Word2VecSpec @WindowSize @27335 @EmebddingDimension @'D.Float @'( 'D.CPU, 0)
 
 trainSet :: IO (TokenStreamDataset SymbolOrToken)
 trainSet = dataset [absfile|/Users/timpierson/arity/word2nion/data/wikitext-2/train.txt|]
@@ -75,12 +91,11 @@ validSet = dataset [absfile|/Users/timpierson/arity/word2nion/data/wikitext-2/va
 niceData2FoulTensorDataSet ::
   forall device batchSize m.
   (KnownNat batchSize, KnownDevice device, MonadAsync m) =>
-  AheadT m [[Int]] ->
-  SerialT m ([Tensor device 'D.Int64 '[batchSize]], Tensor device 'D.Float '[batchSize])
+  AheadT m [([Int32], NegativeSample)] ->
+  SerialT m (([Tensor device 'D.Int64 '[batchSize]], [Tensor device 'D.Int64 '[batchSize]]), Tensor device 'D.Float '[batchSize])
 niceData2FoulTensorDataSet =
-  aheadly 
-    . S.map (
-      ( (, zeros)
-          . fmap (UnsafeMkTensor . asTensor . fmap (fromIntegral :: Int -> Int64))
-          . Data.List.transpose
-      ))
+  aheadly . S.map ((,zeros) . bimap alaTensor alaTensor . unzip . fmap (second unNegativeSample))
+  where
+    alaTensor =
+      fmap (UnsafeMkTensor . asTensor . fmap (fromIntegral :: Int32 -> Int64))
+        . Data.List.transpose

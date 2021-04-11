@@ -105,7 +105,7 @@ executable word2nion
     -Wunused-packages -Wincomplete-record-updates -fplugin
     GHC.TypeLits.Normalise -fplugin GHC.TypeLits.KnownNat.Solver
     -fplugin GHC.TypeLits.Extra.Solver -fconstraint-solver-iterations=0
-    -fdicts-strict -fmax-worker-args=16 -fspec-constr-recursive=16 -O2
+    -fdicts-strict -fmax-worker-args=16 -fspec-constr-recursive=16
     -rtsopts -threaded -with-rtsopts=-N 
 
 test-suite word2nion-test

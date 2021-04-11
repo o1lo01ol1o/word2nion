@@ -260,10 +260,11 @@ trainer validationAggf trainAggf m o ts vs = S.concatMap (trainAndValidReport m 
       S.map Validation . sequenceS $
         fmap S.yield (S.fold FL.mconcat (S.map validationAggf $ validationStream False m' vs))
 
-vegaLiteFold :: (Monitorable [Report a b] VegaLite, MonadIO m) => FilePath -> FL.Fold m (Report a b) ()
+vegaLiteFold :: (Monitorable [Report a b] VegaLite, MonadIO m) => FilePath -> FL.Fold m (Report a b) (Maybe (Report a b))
 vegaLiteFold fp = mkFold go (return mempty) outM
   where
-    outM _ = pure ()
+    outM [] = pure Nothing
+    outM (r:_) = pure (Just r)
     go as r = do
       let as' = r : as
       -- liftIO $ putStrLn $ "Writing to:  " <> fp
@@ -276,7 +277,7 @@ vegaLiteMonitor ::
   ) =>
   FilePath ->
   SerialT m (Report a b) ->
-  m ()
+  m (Maybe (Report a b))
 vegaLiteMonitor fp = S.fold (vegaLiteFold fp)
 
 -- | Wrappers to get declarative monoidal stats that jive with hkds.
