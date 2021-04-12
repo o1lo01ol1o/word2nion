@@ -7,7 +7,7 @@
 # If cudaSupport is true, this needs to be set to a valid CUDA major version number, e.g. 10:
 # nix-shell --arg cudaSupport true --argstr cudaMajorVersion 10
 , cudaMajorVersion ? null
-, withHoogle ? false
+, withHoogle ? true
 , pkgs ? import ./nix/default.nix {
     inherit config sourcesOverride cudaSupport cudaMajorVersion;
   }
@@ -18,6 +18,7 @@ let
   # lorri. See https://input-output-hk.github.io/haskell.nix/user-guide/development/
   shell = hasktorchSkeletonHaskellPackages.shellFor {
     name = "word2nion-dev-shell";
+    packages = ps: [ps.word2nion];
 
     tools = {
       cabal = "3.2.0.0";

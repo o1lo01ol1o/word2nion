@@ -1,0 +1,2 @@
+#!/bin/bash
+eval nix-shell --run \"hoogle server --local\"
