@@ -31,14 +31,17 @@ module Models.Word2FinVec where
 -- MLP for the morphism prediction
 --------------------------------------------------------------------------------
 
+import Data.Set (Set)
+import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import GHC.TypeLits
+import Torch (asTensor)
 import qualified Torch.DType as D
-import Torch.Functional (detach)
+import Torch.Functional (detach, oneHot)
+import qualified Torch.Functional as F
 import Torch.Functional.Internal (maskedFillScalar)
 import Torch.Typed
 import Prelude hiding (exp, log)
-import Data.Set (Set)
 
 -- | Spec for initializing the MLP
 data
@@ -102,6 +105,7 @@ mlp MLP {..} stochastic input =
               . forward mlpLayer0
             =<< pure input
         )
+
 -- | How to initialize the MLP
 instance
   ( KnownNat inputFeatures,
@@ -123,8 +127,9 @@ instance
       <*> sample (DropoutSpec mlpDropoutProbSpec)
 
 data Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device where
-  Word2FinVec :: forall windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device .
-    { vocab :: Tensor device dtype '[vocabSize, featureSize],
+  Word2FinVec ::
+    forall windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device.
+    { vocab :: Parameter device dtype '[vocabSize, featureSize],
       morphismTokenSet :: Tensor device dtype '[nMorphisms, vocabSize],
       morphismMLP :: MLP (featureSize * 2) nMorphisms mlpHiddenSize dtype device
     } ->
@@ -135,13 +140,20 @@ data Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype
 data Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device where
   Word2FinVecSpec ::
     { morphismTokenSetSpec :: Set Int,
-    mlpSpec :: MLPSpec featureSize nMorphisms mlpHiddenSize dtype device } ->
+      mlpSpec :: MLPSpec (featureSize * 2) nMorphisms mlpHiddenSize dtype device
+    } ->
     Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
   deriving stock (Show, Eq, Generic)
 
 -- | How to initialize the Word2FinVec
 instance
-  ( 
+  ( KnownNat nMorphisms,
+    KnownNat vocabSize,
+    KnownNat featureSize,
+    KnownNat mlpHiddenSize,
+    KnownDType dtype,
+    KnownDevice device,
+    RandDTypeIsValid device dtype
   ) =>
   Randomizable
     (Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device)

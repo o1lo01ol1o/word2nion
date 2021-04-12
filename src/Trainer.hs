@@ -93,7 +93,8 @@ import Torch.Typed
 
 -- } Strict, inductive tuple to combat your space leaks.
 data (:/\) a b = !a :/\ !b
-
+  deriving stock (Show, Eq, Ord, Generic, Read)
+  
 infix 5 :/\
 
 fst' :: (a :/\ b) -> a
