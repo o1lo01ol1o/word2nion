@@ -32,6 +32,7 @@ import Control.Lens.TH (makePrisms)
 import Control.Monad.Catch (MonadThrow)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Control ()
+import Data.Bifunctor
 import Data.Functor.Const (Const (Const))
 import Data.Functor.Identity (Identity)
 import Data.Functor.Product (Product (..))
@@ -90,9 +91,22 @@ import Torch.Typed
     toCPU,
   )
 
+-- } Strict, inductive tuple to combat your space leaks.
 data (:/\) a b = !a :/\ !b
 
 infix 5 :/\
+
+fst' :: (a :/\ b) -> a
+fst' (a :/\ _) = a
+
+snd' :: (a :/\ b) -> b
+snd' (_ :/\ b) = b
+
+instance Functor ((:/\) a) where
+  fmap f (a :/\ b) = a :/\ f b
+
+instance Bifunctor (:/\) where
+  bimap f g (a :/\ b) = f a :/\ g b
 
 type Two f a = Product f f a
 
@@ -264,7 +278,7 @@ vegaLiteFold :: (Monitorable [Report a b] VegaLite, MonadIO m) => FilePath -> FL
 vegaLiteFold fp = mkFold go (return mempty) outM
   where
     outM [] = pure Nothing
-    outM (r:_) = pure (Just r)
+    outM (r : _) = pure (Just r)
     go as r = do
       let as' = r : as
       -- liftIO $ putStrLn $ "Writing to:  " <> fp

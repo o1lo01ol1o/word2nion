@@ -67,6 +67,7 @@ library
     Models
     Models.QuaternionSelfSupervised
     Models.Word2Vec
+    Models.Word2FinVec
     Torch.Streamly.Dataloader
     Torch.Streamly.Tokenizer
     Torch.Typed.Quaternion

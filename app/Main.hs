@@ -52,6 +52,7 @@ import Torch.Typed
   )
 import Torch.Typed.Optim
 import Data.Int (Int32)
+import Control.Monad (void)
 type EmebddingDimension = 256
 
 type BatchSize = 128
@@ -66,7 +67,7 @@ main = do
   print $ Prelude.length $ tokenStreamDatasetToken train
   print $ tokenStreamDatasetOccurances train
   valid <- validSet
-  trainAndMonitor @BatchSize @WindowSize
+  void $ trainAndMonitor @BatchSize @WindowSize
     "mon.html"
     (TrainableWord2Vec initModel)
     initOptim
@@ -77,7 +78,7 @@ main = do
     ws = natValI @WindowSize
 
 debugPrintTokenStream' :: (MonadAsync m) => TokenStreamDataset SymbolOrToken -> AheadT m [Int32] -> AheadT m [Int32]
-debugPrintTokenStream' = debugPrintTokenStream (fromMaybe (Left ' ') . fmap unSymbolOrToken)
+debugPrintTokenStream' = debugPrintTokenStream (maybe (Left ' ') unSymbolOrToken)
 
 model :: IO (Word2Vec WindowSize 27335 EmebddingDimension 'D.Float '( 'CPU, 0))
 model = sample $ Word2VecSpec @WindowSize @27335 @EmebddingDimension @'D.Float @'( 'D.CPU, 0)
