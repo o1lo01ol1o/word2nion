@@ -3,7 +3,7 @@
 [![GitHub CI](https://github.com/o1lo01ol1o/word2nion/workflows/CI/badge.svg)](https://github.com/o1lo01ol1o/word2nion/actions)
 [![Hackage](https://img.shields.io/hackage/v/word2nion.svg?logo=haskell)](https://hackage.haskell.org/package/word2nion)
 
-A handful of small experiments on NLP and non-commutive algebras.
+A handful of small experiments on NLP and (non-)commutive algebras.
 
 
 # Dev
@@ -14,12 +14,15 @@ A handful of small experiments on NLP and non-commutive algebras.
 ./scripts/hoogle
 ```
 
+and go to <https://localhost:8080>
+
 ## GHCI
 
 ```console
 nix-shell --run "cabal new-repl"
 ```
 
+This loads the pragmas and impots set in `.ghci` in addition to the cabal-specified local library.
 
 ## Building and running
 
@@ -46,7 +49,6 @@ Then execute the binary at the listed path.
 ## higher Caley-dickson iterations
 
 - [ ] generalize the quaternion implmentation to generate an algebra for any `N`ion
-
 
 ## Transformer
 
