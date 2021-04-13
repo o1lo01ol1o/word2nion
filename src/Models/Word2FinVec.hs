@@ -34,13 +34,43 @@ module Models.Word2FinVec where
 import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
-import GHC.TypeLits
+import GHC.TypeLits ( KnownNat, Nat, type (*), Mod )
 import Torch (asTensor)
-import qualified Torch.DType as D
-import Torch.Functional (detach, oneHot)
+import Torch.Functional (detach)
 import qualified Torch.Functional as F
 import Torch.Functional.Internal (maskedFillScalar)
 import Torch.Typed
+    ( DeviceType,
+      Tensor(..),
+      KnownDevice,
+      Parameterized,
+      RandDTypeIsValid,
+      StandardFloatingPointDTypeValidation,
+      DType,
+      HasForward(forward),
+      Randomizable(..),
+      natValI,
+      argmax,
+      divScalar,
+      emptyLike,
+      exp,
+      log,
+      relu,
+      softmax,
+      zerosLike,
+      dropoutForward,
+      type (>=),
+      DimOutOfBoundCheck,
+      StandardDTypeValidation,
+      KeepOrDropDim(KeepDim),
+      Dropout,
+      DropoutSpec(DropoutSpec),
+      Linear,
+      LinearSpec(LinearSpec),
+      Embedding(learnedEmbedWeights),
+      EmbeddingSpec(LearnedEmbeddingWithRandomInitSpec),
+      Parameter,
+      KnownDType )
 import Prelude hiding (exp, log)
 
 -- | Spec for initializing the MLP
@@ -126,6 +156,7 @@ instance
       <*> sample LinearSpec
       <*> sample (DropoutSpec mlpDropoutProbSpec)
 
+-- | Our Word2(the category of)Fin(ite)Vec(tor spaces) model.
 data Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device where
   Word2FinVec ::
     forall windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device.
@@ -157,9 +188,18 @@ instance
   ) =>
   Randomizable
     (Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device)
-    (Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device) where 
-      sample Word2FinVecSpec {..} = undefined
-
+    (Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device)
+  where
+  sample Word2FinVecSpec {..} =
+    Word2FinVec
+      <$> (learnedEmbedWeights <$> sample (LearnedEmbeddingWithRandomInitSpec @'Nothing @vocabSize @featureSize)) -- piggy-back off EmbeddingSpec for the weight matrix
+      <*> pure morphs
+      <*> sample mlpSpec
+    where
+      nMorphs = Set.size morphismTokenSetSpec
+      morphs
+        | nMorphs == (natValI @nMorphisms) = UnsafeMkTensor (F.oneHot (natValI @vocabSize) . asTensor $ Set.toList morphismTokenSetSpec)
+        | otherwise = error "sample Word2FinVecSpec nMorphisms and provided morphismTokenSet are not the same size!"
 
 -- | For simplicity, our context window needs to have an odd count of elements
 type WindowIsBalanced windowSize = (Mod windowSize 2 ~ 1, windowSize >= 1)
@@ -170,8 +210,11 @@ data GumbelStyle
     HardStyle
   | -- | output is the gumbel distribution
     SoftStyle
+  deriving stock (Eq, Ord, Show, Bounded, Generic)
 
 -- | see: https://pytorch.org/docs/stable/_modules/torch/nn/functional.html#gumbel_softmax
+-- and https://arxiv.org/abs/1611.01144
+-- and https://arxiv.org/abs/1611.00712
 gumbelSoftmax ::
   forall dim shape dtype device.
   ( KnownNat dim,
