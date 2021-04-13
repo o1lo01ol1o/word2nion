@@ -1,0 +1,3 @@
+:set -XDataKinds -XTypeApplications
+import qualified Torch.Device as D
+import qualified Torch.DType as D

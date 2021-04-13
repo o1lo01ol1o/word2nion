@@ -25,6 +25,7 @@
 {-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE NoStarIsType #-}
 
+{-# OPTIONS_GHC -Wno-redundant-constraints #-}
 module Models.Word2FinVec where
 
 --------------------------------------------------------------------------------
@@ -34,19 +35,21 @@ module Models.Word2FinVec where
 import Data.Set (Set)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
-import GHC.TypeLits ( KnownNat, Nat, type (*), Mod )
+import GHC.TypeNats (Div, type (<=?))
+import GHC.TypeLits ( KnownNat, Nat, type (*), Mod, type (-) )
 import Torch (asTensor)
 import Torch.Functional (detach)
 import qualified Torch.Functional as F
-import Torch.Functional.Internal (maskedFillScalar)
+import Torch.Device as D
+
+import Torch.DType as D
+import Torch.Functional.Internal (maskedFillScalar, combinations)
 import Torch.Typed
-    ( DeviceType,
-      Tensor(..),
+    ( Tensor(..),
       KnownDevice,
       Parameterized,
       RandDTypeIsValid,
       StandardFloatingPointDTypeValidation,
-      DType,
       HasForward(forward),
       Randomizable(..),
       natValI,
@@ -70,7 +73,7 @@ import Torch.Typed
       Embedding(learnedEmbedWeights),
       EmbeddingSpec(LearnedEmbeddingWithRandomInitSpec),
       Parameter,
-      KnownDType )
+      KnownDType, reshape, All )
 import Prelude hiding (exp, log)
 
 -- | Spec for initializing the MLP
@@ -176,7 +179,7 @@ data Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms d
     Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
   deriving stock (Show, Eq, Generic)
 
--- | How to initialize the Word2FinVec
+-- | How to initialize the weights of the Word2FinVec model
 instance
   ( KnownNat nMorphisms,
     KnownNat vocabSize,
@@ -248,3 +251,21 @@ gumbelSoftmax gs tau logits = case gs of
     gumbelsIO =
       divScalar tau . (logits -) . log . exp
         <$> emptyLike logits
+
+-- | pairwise combinations of all values.  Flattens and uses `combinations` under the hood.
+-- >>> let a = Torch.Typed.ones @'[3,5] @'D.Float @'(D.CPU, 0)
+-- >>> Torch.Typed.shape $ pairsOfTokens a
+-- [3,35,2]
+pairsOfTokens ::
+  forall batchSize windowSize np2 device dtype.
+  ( All KnownNat '[batchSize, windowSize, np2],
+    (Div (Div np2 batchSize) 2 * 2)
+      ~ Div np2 batchSize,
+    (1 <=? batchSize) ~ 'True,
+    (batchSize * Div np2 batchSize) ~ np2,
+    np2 ~ (((batchSize * windowSize) - 1) * (batchSize * windowSize))
+  ) => Tensor device dtype '[batchSize, windowSize] -- ^ input
+  ->
+  Tensor device dtype '[batchSize, Div (Div np2 batchSize) 2, 2]
+pairsOfTokens t = reshape . (UnsafeMkTensor @_ @_ @'[np2]) $ combinations (toDynamic $ reshape @'[batchSize * windowSize] t) 2 False
+
