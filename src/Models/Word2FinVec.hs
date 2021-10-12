@@ -18,6 +18,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
@@ -33,6 +34,7 @@ module Models.Word2FinVec where
 --------------------------------------------------------------------------------
 
 import Data.Set (Set)
+import Control.Lens.TH (makeLenses)
 import qualified Data.Set as Set
 import GHC.Generics (Generic)
 import GHC.TypeNats (Div, type (<=?))
@@ -43,7 +45,7 @@ import qualified Torch.Functional as F
 import Torch.Device as D
 
 import Torch.DType as D
-import Torch.Functional.Internal (maskedFillScalar, combinations)
+import Torch.Functional.Internal (maskedFillScalar, combinations, one_hot)
 import Torch.Typed
     ( Tensor(..),
       KnownDevice,
@@ -73,8 +75,10 @@ import Torch.Typed
       Embedding(learnedEmbedWeights),
       EmbeddingSpec(LearnedEmbeddingWithRandomInitSpec),
       Parameter,
-      KnownDType, reshape, All )
+      KnownDType, reshape, All, dot, matmul, MatMul, toDependent, MatMulDTypeIsValid )
 import Prelude hiding (exp, log)
+import Control.Lens (Lens')
+import Control.Monad.Reader
 
 -- | Spec for initializing the MLP
 data
@@ -163,9 +167,11 @@ instance
 data Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device where
   Word2FinVec ::
     forall windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device.
-    { vocab :: Parameter device dtype '[vocabSize, featureSize],
-      morphismTokenSet :: Tensor device dtype '[nMorphisms, vocabSize],
-      morphismMLP :: MLP (featureSize * 2) nMorphisms mlpHiddenSize dtype device
+    { vocab :: Parameter device dtype '[vocabSize, featureSize], -- ^ The vocabulary
+      morphismTokenSet :: Tensor device dtype '[nMorphisms, vocabSize], -- ^ The tokens we want to use as morphisms
+      morphismMLP :: MLP (featureSize * 2) nMorphisms mlpHiddenSize dtype device, -- ^ The mlp for predicting morphisms from pairs of words
+      morphismLittleTheta :: Parameter device dtype '[nMorphisms, 2 * featureSize], -- ^ The vector used to generate the matrix by which we functorially take tripls of (foo, morphism, bar) to a finite vector
+      morphismBigTheta :: Parameter device dtype '[nMorphisms, featureSize] -- ^ The vector encoding the codomain of the universal map.
     } ->
     Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
   deriving stock (Show, Generic)
@@ -178,6 +184,34 @@ data Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms d
     } ->
     Word2FinVecSpec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
   deriving stock (Show, Eq, Generic)
+
+-- | Parmeters we may whish to vary accross batches
+data BatchParam = BatchParam {_gumbelTau :: Float, _isStochastic :: Bool}
+  deriving stock (Show, Eq, Generic)
+
+makeLenses ''BatchParam
+
+-- | Context for parmeters we may whish to vary accross batches
+
+class HasBatchEnv e where
+  batchEnvL :: Lens' e BatchParam
+
+  batchEnvTao :: Lens' e Float
+  batchEnvTao = batchEnvL . batchEnvTao
+
+  batchEnvStochastic :: Lens' e Bool
+  batchEnvStochastic = personEnvL . batchEnvStochastic
+
+instance HasBatchEnv BatchParam where
+  batchEnvL = id
+  batchEnvTao f s = f (_gumbelTau s) <&> \a -> s {_gumbelTau = a}
+  batchEnvStochastic f s = f (_isStochastic s) <&> \a -> s {_isStochastic = a}
+
+askTao :: (MonadReader e m, HasBatchEnv e) => m Float
+askTao = view batchEnvTao
+
+askIsStochastic :: (MonadReader e m, HasBatchEnv e) => m Bool
+askIsStochastic = view batchEnvStochastic
 
 -- | How to initialize the weights of the Word2FinVec model
 instance
@@ -198,11 +232,13 @@ instance
       <$> (learnedEmbedWeights <$> sample (LearnedEmbeddingWithRandomInitSpec @'Nothing @vocabSize @featureSize)) -- piggy-back off EmbeddingSpec for the weight matrix
       <*> pure morphs
       <*> sample mlpSpec
+      <*> sample LinearSpec
+      <*> sample LinearSpec
     where
       nMorphs = Set.size morphismTokenSetSpec
       morphs
         | nMorphs == (natValI @nMorphisms) = UnsafeMkTensor (F.oneHot (natValI @vocabSize) . asTensor $ Set.toList morphismTokenSetSpec)
-        | otherwise = error "sample Word2FinVecSpec nMorphisms and provided morphismTokenSet are not the same size!"
+        | otherwise = error "sample: Word2FinVecSpec: nMorphisms and provided morphismTokenSet are not the same size!"
 
 -- | For simplicity, our context window needs to have an odd count of elements
 type WindowIsBalanced windowSize = (Mod windowSize 2 ~ 1, windowSize >= 1)
@@ -253,9 +289,10 @@ gumbelSoftmax gs tau logits = case gs of
         <$> emptyLike logits
 
 -- | pairwise combinations of all values.  Flattens and uses `combinations` under the hood.
+-- Output shape is '[nPairs, pair]
 -- >>> let a = Torch.Typed.ones @'[3,5] @'D.Float @'(D.CPU, 0)
 -- >>> Torch.Typed.shape $ pairsOfTokens a
--- [3,35,2]
+-- [105,2]
 pairsOfTokens ::
   forall batchSize windowSize np2 device dtype.
   ( All KnownNat '[batchSize, windowSize, np2],
@@ -263,9 +300,67 @@ pairsOfTokens ::
       ~ Div np2 batchSize,
     (1 <=? batchSize) ~ 'True,
     (batchSize * Div np2 batchSize) ~ np2,
+    (Div np2 2 * 2) ~ np2,
     np2 ~ (((batchSize * windowSize) - 1) * (batchSize * windowSize))
-  ) => Tensor device dtype '[batchSize, windowSize] -- ^ input
-  ->
-  Tensor device dtype '[batchSize, Div (Div np2 batchSize) 2, 2]
-pairsOfTokens t = reshape . (UnsafeMkTensor @_ @_ @'[np2]) $ combinations (toDynamic $ reshape @'[batchSize * windowSize] t) 2 False
+  ) =>
+  -- | input
+  Tensor device dtype '[batchSize, windowSize] -> 
+  Tensor device dtype '[Div np2 2, 2]
+pairsOfTokens t =
+  reshape . (UnsafeMkTensor @_ @_ @'[np2]) $
+    combinations (toDynamic $ reshape @'[batchSize * windowSize] t) 2 False
+-- >>> let a = Torch.Typed.ones @'[3,5] @'D.Int32 @'(D.CPU, 0)
+-- >>> Torch.Typed.shape $ oneHot @5 a
+-- [3,5,5]
+oneHot ::
+  forall vocabSize batchSize nTokens  device.
+  (KnownNat vocabSize) =>
+  Tensor device 'D.Int32 '[batchSize, nTokens] ->
+  Tensor device 'D.Float '[batchSize, nTokens, vocabSize]
+oneHot t = UnsafeMkTensor $ one_hot dt vocabSize
+  where
+    dt = toDynamic t
+    vocabSize = natValI @vocabSize
 
+oneHotTokenToVocabEmbed ::
+  forall vocabSize featureSize batchSize nTokens dtype device.
+  ( '[batchSize, nTokens, featureSize]
+      ~ MatMul '[vocabSize, featureSize] '[batchSize, nTokens, vocabSize],
+    MatMulDTypeIsValid
+      device
+      dtype
+  ) => Parameter device dtype '[vocabSize, featureSize] -- ^ Vocabulary matrix
+  -> Tensor device dtype '[batchSize, nTokens, vocabSize] -- ^ sequence of one-hot vectors to embed
+  ->
+  Tensor device dtype '[batchSize, nTokens, featureSize]
+oneHotTokenToVocabEmbed vocab =
+  matmul @'[batchSize, nTokens, featureSize] @'[vocabSize, featureSize] @'[batchSize, nTokens, vocabSize]
+    (toDependent vocab)
+
+-- Should this take the outerproduct of [worda, mi] and then dot that with wordb?  subtract that from the corresponding morphismBigTheta?
+morphismPredict :: forall windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device nPairs m. (MonadReader BatchParam m, MonadIO m) =>  Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
+   -> Tensor device dtype '[nPairs, 2, featureSize] 
+   -> m (Tensor device dtype '[nPairs, nMorphisms])
+morphismPredict Word2FinVec{..} pairs = do  
+  tao <- askTao
+  isStochastic <- askIsStochastic
+  let pairs' = forward morphismMLP isStochastic $ reshape @'[nPairs, 2 * featureSize] pairs
+  morph_y_hot <- gumbelSoftmax GumbelHardStyle tao pairs'
+  let morph = matmul @'[nPairs, nMorphisms] @'[nMorphisms, featureSize] @'[nPairs, featureSize] morph morph_y_hot 
+
+universalConstructionStep :: forall batchSize windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device. 
+  Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
+  -> Tensor device 'D.Int32 '[batchSize, windowSize]
+  -> Tensor device 'D.Int32 '[batchSize, windowSize]
+  -> Tensor device dtype '[batchSize]
+universalConstructionStep Word2FinVec{..} feats _negSamps = do
+  let allPairsInBatch = oneHotTokenToVocabEmbed vocab . oneHot . pairsOfTokens $ feats
+  pure allPairsInBatch
+
+    
+-- trainStep :: forall batchSize windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device. 
+--   Word2FinVec windowSize vocabSize featureSize mlpHiddenSize nMorphisms dtype device
+--   -> Tensor device D.Int32 '[batchSize, windowSize]
+--   -> Tensor device dtype '[batchSize, windowSize]
+--   -> Tensor device dtype '[batchSize]
+-- trainStep = undefined 
